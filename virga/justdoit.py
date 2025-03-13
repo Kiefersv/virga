@@ -16,7 +16,8 @@ from .direct_mmr_solver import direct_solver
 
 
 def compute(atmo, directory = None, as_dict = True, og_solver = True, 
-    direct_tol=1e-15, refine_TP = True, og_vfall=True, analytical_rg = True, do_virtual=True):
+    direct_tol=1e-15, refine_TP = True, og_vfall=True, analytical_rg = True,
+    do_virtual=True, mixed=False):
 
     """
     Top level program to run eddysed. Requires running `Atmosphere` class 
@@ -48,7 +49,9 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
         inclusions of alternative particle size distributions
     do_virtual : bool 
         If the user adds an upper bound pressure that is too low. There are cases where a cloud wants to 
-        form off the grid towards higher pressures. This enables that. 
+        form off the grid towards higher pressures. This enables that.
+    mixed : bool, optional
+        If true, cloud particles are assumed to be able to mix together.
 
     Returns 
     -------
@@ -113,6 +116,8 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             fsed_in = (atmo.fsed-atmo.eps) 
         elif atmo.param == 'const':
             fsed_in = atmo.fsed
+        else:
+            raise ValueError('Fsed parametrisation not supported')
 
         qc, qt, rg, reff, ndz, qc_path, mixl, z_cld = _eddysed_mixed(atmo.t_level,
             atmo.p_level, atmo.t_layer, atmo.p_layer, condensibles, gas_mw, gas_mmr,
@@ -120,7 +125,7 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param, mh,
             atmo.sig, rmin, nradii, atmo.d_molecule, atmo.eps_k, atmo.c_p_factor,
             og_vfall, supsat=atmo.supsat,verbose=atmo.verbose,do_virtual=do_virtual,
-            mixed=True)
+            mixed=mixed)
 
         pres_out = atmo.p_layer
         temp_out = atmo.t_layer
@@ -139,9 +144,10 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
 
             
     #Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
-    #albedo, and asymmetry parameter.    
-    opd, w0, g0, opd_gas = calc_optics(nwave, qc, qt, rg, reff, ndz,radius,
-                                       dr,qext, qscat,cos_qscat,atmo.sig, rmin, nradii,verbose=atmo.verbose)
+    #albedo, and asymmetry parameter. TODO ????
+    # opd, w0, g0, opd_gas = calc_optics(nwave, qc, qt, rg, reff, ndz,radius,
+    #                                    dr,qext, qscat,cos_qscat,atmo.sig, rmin, nradii,verbose=atmo.verbose)
+    opd, w0, g0, opd_gas = (0, 0, 0, 0)
 
     if as_dict:
         if atmo.param == 'exp':

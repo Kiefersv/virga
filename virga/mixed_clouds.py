@@ -12,7 +12,7 @@ kb = rgas / avog
 def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rho_p,
                    mw_atmos, gravity, kz, mixl, fsed, b, eps, scale_h, z_top, z_alpha,
                    z_min, param, mh, sig, rmin, nrad, d_molecule, eps_k, c_p_factor,
-                   og_vfall=True, do_virtual=True, supsat=0, verbose=False, mixed=True):
+                   og_vfall=True, do_virtual=True, supsat=0, verbose=False, mixed=False):
     """
     Given an atmosphere and condensates, calculate size and concentration
     of condensates in balance between eddy diffusion and sedimentation.
@@ -39,6 +39,8 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
         Mean molecular weight of the atmosphere
     gravity : float
         Gravity of planet cgs
+    mixl : float
+        convective mixing length scale (cm): no less than 1/10 scale height
     kz : float or ndarray[float]
         Kzz in cgs, either float or ndarray depending of whether or not
         it is set as input
@@ -99,11 +101,22 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
         number column density of condensate (cm^-3)
     qc_path : ndarray
         vertical path of condensate
+    mixl : float
+        convective mixing length scale (cm): no less than 1/10 scale height
+    z_cld : ndarray
+        altitude of the cloud layer
     """
 
     #default for everything is false, will fill in as True as we go
     did_gas_condense = [False for i in condensibles]
     z_cld=None
+
+    # if cloud particles are evaluted mixed ...
+    if mixed:
+        # ... add a mixed species
+        condensibles += ['mixed']
+        # ... add space for the mixed density
+        rho_p = np.pad(rho_p, (0, 1))
 
     # set top of atmosphere values
     t_bot = t_top[-1]
@@ -130,9 +143,14 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
     if do_virtual:
         for i, igas in zip(range(ngas), condensibles):
 
+            # skip mixed species
+            if igas == 'mixed':
+                continue
+
             # read in vapour pressure (arguments can be different, thus use kwargs)
             get_pvap = getattr(pvaps, igas)
-            if igas in ['Mg2SiO4','CaTiO3','CaAl12O19','FakeHaze','H2SO4','KhareHaze','SteamHaze300K','SteamHaze400K']:
+            if igas in ['Mg2SiO4', 'CaTiO3', 'CaAl12O19', 'FakeHaze', 'H2SO4',
+                        'KhareHaze', 'SteamHaze300K', 'SteamHaze400K']:
                 pvap = get_pvap(t_bot, p_bot, mh=mh)
             else:
                 pvap = get_pvap(t_bot, mh=mh)
@@ -305,8 +323,6 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     """
     # get the correct size for ouput and working arrays
     lg = len(gas_name)
-    if mixed:
-        lg = 1
 
     # initialisation
     qc_layer = np.zeros(lg)
@@ -405,6 +421,7 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     # Update properties at bottom of next layer
     # !!! Do not change this lane, it will break the code !!!
     for q, qt in enumerate(qt_top):
+        if mixed and q == lg-1: continue  # skip mixed entry
         q_below[q] = qt
 
     # Get layer averages where odp is not 0
@@ -518,25 +535,30 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
     # pysical parameters
     rho_atmos = p_layer / (r_atmos * t_layer)  # atmospheric density (g/cm^3)
     lnsig2 = 0.5 * np.log(sig)**2  # geometric std dev of lognormal size distribution
-    rho_p_avg = rho_p
 
-    # length of arrays
-    lgas = len(gas_name)
+    # get the correct size for ouput and working arrays
+    lg = len(gas_name)
 
     # working arrays
-    qt_layer = np.zeros(lgas)
-    qt_top = np.zeros(lgas)
-    qc_layer = np.zeros(lgas)
-    z_cld = np.zeros(lgas)
-    fsed_mid = np.zeros(lgas)
+    qt_layer = np.zeros(lg)
+    qt_top = np.zeros(lg)
+    qc_layer = np.zeros(lg)
+    z_cld = np.zeros(lg)
+    fsed_mid = np.zeros(lg)
 
     # ===================================================================================
     # Step 1: calculate the cloud mass mixing ratio for each species individually
     # ===================================================================================
-    # read in vapour pressure (arguments can be different, thus use kwargs)
     for i, gas in enumerate(gas_name):
+
+        # skip mixed cloud particle entry
+        if gas == 'mixed':
+            continue
+
+        # read in vapour pressure (arguments can be different, thus use kwargs)
         get_pvap = getattr(pvaps, gas)
-        if gas in ['Mg2SiO4','CaTiO3','CaAl12O19','FakeHaze','H2SO4','KhareHaze','SteamHaze300K','SteamHaze400K']:
+        if gas in ['Mg2SiO4', 'CaTiO3', 'CaAl12O19', 'FakeHaze', 'H2SO4', 'KhareHaze',
+                   'SteamHaze300K', 'SteamHaze400K']:
             pvap = get_pvap(t_layer, p_layer, mh=mh)
         else:
             pvap = get_pvap(t_layer, mh=mh)
@@ -577,29 +599,23 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
             #   Find total condensate mixing ratio
             qc_layer[i] = np.max([0., qt_layer[i] - qvs])
 
-    # prepare for future calculation if particles are mixed
+    # if cloud particles are mixed, add the total mass mixing ratio
     if mixed:
-        qc_layer = np.asarray([np.sum(qc_layer)])
-        # first check if there is any cloud material, if not, be done
-        if qc_layer == 0:
-            rg_layer = np.asarray([0])
-            reff_layer = np.asarray([0])
-            ndz_layer = np.asarray([0])
-            rho_p_avg = np.asarray([0])
-            return (qt_top, qc_layer, qt_layer, rg_layer, reff_layer, ndz_layer,
-                    z_cld, fsed_mid, rho_p_avg)
-        # reduce gas species to one general species
-        gas_name = ['cloud']
-        # Calculate average cloud particle density
-        rho_p_avg = np.asarray([np.sum(qc_layer)/np.sum(qc_layer/rho_p)])
+        # calcualte total cloud mass of mixed particles
+        qc_layer[-1] = np.asarray([np.sum(qc_layer)])
+
+        # calculate density of mixed cloud particles
+        rho_p[-1] = 0
+        if qc_layer[-1] > 0:
+            rho_p[-1] = np.sum(qc_layer[:-1])/np.sum(qc_layer[:-1]/rho_p[:-1])
 
     # ===================================================================================
     # Calculate the radius of cloud particles by balancing the fall out rate
     # ===================================================================================
 
     # prepare output arrays
-    rg_layer = np.zeros(len(gas_name))
-    reff_layer = np.zeros(len(gas_name))
+    rg_layer = np.zeros(lg)
+    reff_layer = np.zeros(lg)
 
     # fsed at middle of layer
     if param == 'exp':
@@ -610,6 +626,11 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
 
     # loop over all cloud particle species
     for i, gas in enumerate(gas_name):
+
+        # check if there even is cloud material, if not, skip it
+        if qc_layer[i] <= 0:
+            continue
+
         # range of particle radii to search (cm)
         rlo = 1.e-10
         rhi = 10.
@@ -623,13 +644,13 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
                 if og_vfall:
                     rw_temp = optimize.root_scalar(vfall_find_root,
                         bracket=[rlo, rhi], method='brentq', args=(gravity, mw_atmos,
-                        mfp, visc, t_layer,p_layer, rho_p_avg[i], w_convect)
+                        mfp, visc, t_layer,p_layer, rho_p[i], w_convect)
                     )
                     rw_layer = rw_temp.root
                 # balance forces to arrive at solution
                 else:
                     rw_layer = solve_force_balance("rw", w_convect, gravity,
-                        mw_atmos, mfp, visc, t_layer, p_layer, rho_p_avg[i], rlo, rhi
+                        mw_atmos, mfp, visc, t_layer, p_layer, rho_p[i], rlo, rhi
                     )
 
                 # the root was found if no error was raised
@@ -647,7 +668,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
             if og_vfall:
                 # use the analytic solution to the fall speed
                 vfall_temp.append(vfall(r_[j], gravity, mw_atmos, mfp, visc,
-                    t_layer, p_layer, rho_p_avg[i])
+                    t_layer, p_layer, rho_p[i])
                 )
             else:
                 # balance forces to arrive at solution
@@ -657,7 +678,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
                 while find_root:
                     try:
                         vfall_temp.append(solve_force_balance("vfall", r_[j],
-                            gravity, mw_atmos, mfp, visc, t_layer, p_layer, rho_p_avg[i],
+                            gravity, mw_atmos, mfp, visc, t_layer, p_layer, rho_p[i],
                             vlo, vhi)
                         )
                         find_root = False
@@ -685,19 +706,12 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
     # Calculate the cloud particle number densities
     # ===============================================================================
 
-    if mixed:
-        # total volume of mixed cloud particles
-        vtot = np.asarray([np.sum(qc_layer / rho_p_avg)])
-    else:
-        # each species individual if not mixed
-        vtot = qc_layer / rho_p_avg
-
     # column droplet number concentration (cm^-2), EQN. 14 A&M
-    ndz_layer = (3 * rho_atmos * vtot * dz_layer /
-                 (4 * np.pi * rg_layer ** 3) * np.exp(-9 * lnsig2))
+    ndz_layer = (3 * rho_atmos * qc_layer * dz_layer /
+                (4 * np.pi * rho_p * rg_layer**3) * np.exp(-9 * lnsig2))
 
     return (qt_top, qc_layer, qt_layer, rg_layer, reff_layer, ndz_layer, z_cld,
-            fsed_mid, rho_p_avg)
+            fsed_mid, rho_p)
 
 
 def get_r_grid(r_min=1e-8, n_radii=60):
