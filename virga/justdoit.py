@@ -5,6 +5,7 @@ import numpy as np
 import os
 from scipy import optimize
 
+from .mixed_clouds import _eddysed_mixed
 from .root_functions import advdiff, vfall,vfall_find_root,qvs_below_model, find_cond_t, solve_force_balance
 from .calc_mie import fort_mie_calc, calc_new_mieff
 from . import gas_properties
@@ -112,14 +113,15 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             fsed_in = (atmo.fsed-atmo.eps) 
         elif atmo.param == 'const':
             fsed_in = atmo.fsed
-        qc, qt, rg, reff, ndz, qc_path, mixl, z_cld = eddysed(atmo.t_level, atmo.p_level, atmo.t_layer, atmo.p_layer, 
-                                             condensibles, gas_mw, gas_mmr, rho_p , mmw, 
-                                             atmo.g, atmo.kz, atmo.mixl, 
-                                             fsed_in,
-                                             atmo.b, atmo.eps, atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param,
-                                             mh, atmo.sig, rmin, nradii,
-                                             atmo.d_molecule,atmo.eps_k,atmo.c_p_factor,
-                                             og_vfall, supsat=atmo.supsat,verbose=atmo.verbose,do_virtual=do_virtual)
+
+        qc, qt, rg, reff, ndz, qc_path, mixl, z_cld = _eddysed_mixed(atmo.t_level,
+            atmo.p_level, atmo.t_layer, atmo.p_layer, condensibles, gas_mw, gas_mmr,
+            rho_p , mmw, atmo.g, atmo.kz, atmo.mixl, fsed_in, atmo.b, atmo.eps,
+            atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param, mh,
+            atmo.sig, rmin, nradii, atmo.d_molecule, atmo.eps_k, atmo.c_p_factor,
+            og_vfall, supsat=atmo.supsat,verbose=atmo.verbose,do_virtual=do_virtual,
+            mixed=True)
+
         pres_out = atmo.p_layer
         temp_out = atmo.t_layer
         z_out = atmo.z
