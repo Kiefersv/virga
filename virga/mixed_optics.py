@@ -115,10 +115,14 @@ def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, q
                     rr = radius[irad]
                     arg1 = dr[irad] / (np.sqrt(2. * np.pi) * rr * np.log(sig))
                     arg2 = -np.log(rr / rg[iz, igas]) ** 2 / (2 * np.log(sig) ** 2)
-                    norm = norm + arg1 * np.exp(arg2)
+                    if arg2 > -300:  # prevent underflow, set to 0 otherwise
+                        norm = norm + arg1 * np.exp(arg2)
 
                 # normalization
-                norm = ndz[iz, igas] / norm  # number density distribution
+                if norm > 0:
+                    norm = ndz[iz, igas] / norm  # number density distribution
+                else:
+                    norm = 0
 
                 # iterate over all Mie radii
                 for irad in range(nrad):
@@ -126,7 +130,10 @@ def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, q
                     rr = radius[irad]
                     arg1 = dr[irad] / (np.sqrt(2. * np.pi) * np.log(sig))
                     arg2 = -np.log(rr / rg[iz, igas]) ** 2 / (2 * np.log(sig) ** 2)
-                    pir2ndz = norm * np.pi * rr * arg1 * np.exp(arg2)
+                    if arg2 > -300:  # prevent underflow, set to 0 otherwise
+                        pir2ndz = norm * np.pi * rr * arg1 * np.exp(arg2)
+                    else:
+                        pir2ndz = 0.0
 
                     # mixed particles need to calculated here, cant be precalculated
                     if mixed and igas == ngas-1:
@@ -216,7 +223,7 @@ def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, q
     return opd, w0, g0, opd_gas
 
 
-def _mixed_mie(gas_name, refidx, qc, rr, rup, wavelength, rhop):
+def _mixed_mie(gas_name, refidx, qc, radius, rup, wavelength, rhop):
     """
     Calculate mie coefficients for mixed particles
 
@@ -230,6 +237,8 @@ def _mixed_mie(gas_name, refidx, qc, rr, rup, wavelength, rhop):
         mass mixing ratios of cloud material
     radius : ndarray
         radius to calculate mie coefficients
+    rup : ndarray
+        spacing of radius array
     wavelength : ndarray
         wavelength to calculate mie coefficients
     rhop : ndarray
@@ -244,7 +253,7 @@ def _mixed_mie(gas_name, refidx, qc, rr, rup, wavelength, rhop):
     # get sizes of input
     nz = qc.shape[0]
     nw = wavelength.shape[0]
-    nr = rr.shape[0]
+    nr = radius.shape[0]
 
     # set up working arrays
     qext = np.zeros((nz, nw, nr))
@@ -260,11 +269,12 @@ def _mixed_mie(gas_name, refidx, qc, rr, rup, wavelength, rhop):
             e_cur = np.asarray([complex(n[i], k[i])**2 for i in range(len(wavelength))])
             volfrac = qc[z, i] / rhop[i] / np.sum(qc[z, :-1]/rhop)
             e_eff += volfrac * e_cur**(1./3.)
-        e_eff = e_eff**3  # finish LLL avaraging
-        m_eff = e_eff**(1./2.)  # convert back to refractiv index
+        e_eff **= 3  # finish LLL averaging
+        m_eff = e_eff**(1./2.)  # convert back to refractive index
 
         # get Mie coeficients
-        qext[z], qsca[z], cos_qsca[z] = calc_new_mieff(wavelength, m_eff.real, m_eff.imag, rr, rup)
+        qext[z], qsca[z], cos_qsca[z] = calc_new_mieff(wavelength, m_eff.real,
+                                                       m_eff.imag, radius, rup)
 
     # return mie values
     return qext, qsca, cos_qsca

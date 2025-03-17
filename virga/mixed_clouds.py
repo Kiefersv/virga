@@ -210,11 +210,22 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
 
         # calculate the cloud structure in each layer of the atmosphere
         for iz in range(nz-1,-1,-1): #goes from bottom to top of the atmosphere
+
+            # select index of fsed, array fsed uses two for interpolation
+            if param == 'array':
+                fsed_bot = fsed[iz]
+                ftop = fsed[iz+1]
+            # exp, and const are calculated later using input values
+            else:
+                fsed_bot = fsed
+                ftop = None  # only used for array input
+
             qc[iz], qt[iz], rg[iz], reff[iz], ndz[iz], _, z_cld, _ = layer(condensibles,
                 rho_p, t_mid[iz], p_mid[iz], t_top[iz], t_top[iz+1], p_top[iz],
                 p_top[iz+1], kz[iz], mixl[iz], gravity, mw_atmos, gas_mw, q_below,
-                supsat, fsed, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
-                sig,mh, rmin, nrad, d_molecule, eps_k, c_p_factor, og_vfall, z_cld, mixed
+                supsat, fsed_bot, ftop, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min,
+                param, sig, mh, rmin, nrad, d_molecule, eps_k, c_p_factor, og_vfall,
+                z_cld, mixed
             )
 
             qc_path = qc_path + qc[iz] * (p_top[iz+1] - p_top[iz]) / gravity
@@ -227,7 +238,7 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
 
 def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
           kz, mixl, gravity, mw_atmos, gas_mw, q_below,
-          supsat, fsed, b, eps, z_top, z_bot, z_alpha, z_min, param,
+          supsat, fsed, f_top, b, eps, z_top, z_bot, z_alpha, z_min, param,
           sig, mh, rmin, nrad, d_molecule, eps_k, c_p_factor,
           og_vfall, z_cld, mixed):
     """
@@ -268,6 +279,8 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
         Super saturation factor
     fsed : float
         Sedimentation efficiency coefficient (unitless)
+    f_top : float
+        Sedimentation efficiency coefficient at top of Layer (unitless)
     b : float
         Denominator of exponential in sedimentation efficiency  (if param is 'exp')
     eps: float
@@ -383,10 +396,18 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
             z_sub = z_bot_sub + scale_h * np.log(p_bot_sub / p_sub)  # midpoint altitude
             t_sub = t_bot + np.log(p_bot / p_sub) * dtdlnp  # midpoint temperature
 
+            # interpolate to cell center value if fsed is input as array
+            if param == 'array':
+                dfdlnp = (f_top - fsed) / dlnp  # fsed gradient
+                fsed_in = fsed + np.log( p_bot/p_sub )*dfdlnp
+            # pass input value otherwise
+            else:
+                fsed_in = fsed
+
             # calculate cloud structure of sublayer
             qt_top, qc_sub, qt_sub, _, reff_sub, ndz_sub, z_cld, fsed_layer, rho_p_out = calc_qc(
                 gas_name, supsat, t_sub, p_sub, r_atmos, r_cloud, qt_bot_sub, mixl,
-                dz_sub, gravity, mw_atmos, mfp, visc, rho_p, w_convect, fsed, b, eps,
+                dz_sub, gravity, mw_atmos, mfp, visc, rho_p, w_convect, fsed_in, b, eps,
                 param, z_bot_sub, z_sub, z_alpha, z_min, sig, mh, rmin, nrad, og_vfall,
                 z_cld, mixed
             )
@@ -586,7 +607,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
                 z_cld[i] = z_bot
 
             # solution for constant fsed
-            if param == "const":
+            if param in ["const", "array"]:
                 qt_top[i] = qvs + (q_below[i] - qvs) * np.exp(-fsed * dz_layer / mixl)
             # solution for exponentially parametrisation
             elif param == "exp":
@@ -711,8 +732,11 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
     # ===============================================================================
 
     # column droplet number concentration (cm^-2), EQN. 14 A&M
-    ndz_layer = (3 * rho_atmos * qc_layer * dz_layer /
-                (4 * np.pi * rho_p * rg_layer**3) * np.exp(-9 * lnsig2))
+    if rg_layer > 0:
+        ndz_layer = (3 * rho_atmos * qc_layer * dz_layer /
+                    (4 * np.pi * rho_p * rg_layer**3) * np.exp(-9 * lnsig2))
+    else:
+        ndz_layer = np.zeros_like(qc_layer)
 
     return (qt_top, qc_layer, qt_layer, rg_layer, reff_layer, ndz_layer, z_cld,
             fsed_mid, rho_p)

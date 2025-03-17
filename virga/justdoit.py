@@ -111,14 +111,14 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
     #   run original eddysed code
     if og_solver:
         #here atmo.param describes the parameterization used for the variable fsed methodology
-        if atmo.param == 'exp': 
+        if atmo.param == 'exp':
             #the formalism of this is detailed in Rooney et al. 2021
             atmo.b = 6 * atmo.b * H # using constant scale-height in fsed
             fsed_in = (atmo.fsed-atmo.eps) 
-        elif atmo.param == 'const':
+        elif atmo.param in ['const', 'array']:
             fsed_in = atmo.fsed
         else:
-            raise ValueError('Fsed parametrisation not supported')
+            raise ValueError('Fsed parametrisation "' + atmo.param + '" not supported')
 
         qc, qt, rg, reff, ndz, qc_path, mixl, z_cld = _eddysed_mixed(atmo.t_level,
             atmo.p_level, atmo.t_layer, atmo.p_layer, condensibles, gas_mw, gas_mmr,
@@ -1099,7 +1099,7 @@ class Atmosphere():
         ----------
         condensibles : list of str
             list of gases for which to consider as cloud species 
-        fsed : float 
+        fsed : float or ndarray
             Sedimentation efficiency coefficient. Jupiter ~3-6. Hot Jupiters ~ 0.1-1.
         b : float
             Denominator of exponential in sedimentation efficiency  (if param is 'exp')
@@ -1165,8 +1165,8 @@ class Atmosphere():
         df : dataframe or dict
             Dataframe with "pressure"(bars),"temperature"(K). MUST have at least two 
             columns with names "pressure" and "temperature". 
-            Optional columns include the eddy diffusion "kz" in cm^2/s CGS units, and 
-            the convective heat flux 'chf' also in cgs (e.g. sigma_csg T^4)
+            Optional columns include the eddy diffusion "kz" in cm^2/s CGS units,
+            the convective heat flux 'chf' also in cgs (e.g. sigma_csg T^4), and fsed
         filename : str 
             Filename read in. Will be read in with pd.read_csv and should 
             result in two named headers "pressure"(bars),"temperature"(K). 
@@ -1292,8 +1292,8 @@ class Atmosphere():
         df : dataframe or dict
             Dataframe from input with "pressure"(bars),"temperature"(K). MUST have at least two 
             columns with names "pressure" and "temperature". 
-            Optional columns include the eddy diffusion "kz" in cm^2/s CGS units, and 
-            the convective heat flux 'chf' also in cgs (e.g. sigma_csg T^4)
+            Optional columns include the eddy diffusion "kz" in cm^2/s CGS units,
+            the convective heat flux 'chf' also in cgs (e.g. sigma_csg T^4), and fsed
         constant_kz : float
             Constant value for kz, if kz is supplied in df or filename, 
             it will inheret that value and not use this constant_value
@@ -1311,6 +1311,10 @@ class Atmosphere():
             Minimum Kz value. This will reset everything below kz_min to kz_min. 
             Default = 1e5 cm2/s
         """
+
+        # allow to set fsed with dictionary entry
+        if 'fsed' in df.keys():
+            self.fsed = np.array(df['fsed'])
 
         #MIXING LENGTH ASSUMPTIONS 
         if latent_heat:
