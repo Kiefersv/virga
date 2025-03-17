@@ -110,7 +110,7 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             #the formalism of this is detailed in Rooney et al. 2021
             atmo.b = 6 * atmo.b * H # using constant scale-height in fsed
             fsed_in = (atmo.fsed-atmo.eps) 
-        elif atmo.param == 'const':
+        elif atmo.param in ['const', 'array']:
             fsed_in = atmo.fsed
         qc, qt, rg, reff, ndz, qc_path, mixl, z_cld = eddysed(atmo.t_level, atmo.p_level, atmo.t_layer, atmo.p_layer, 
                                              condensibles, gas_mw, gas_mmr, rho_p , mmw, 
@@ -612,11 +612,20 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
         z_cld=None
         for iz in range(nz-1,-1,-1): #goes from BOA to TOA
 
+            # select index of fsed, array fsed uses two for interpolation
+            if param == 'array':
+                fsed_bot = fsed[iz]
+                ftop = fsed[iz+1]
+            # exp, and const are calculated later using input values
+            else:
+                fsed_bot = fsed
+                ftop = None  # only used for array input
+
             qc[iz,i], qt[iz,i], rg[iz,i], reff[iz,i],ndz[iz,i],q_below, z_cld, fsed_layer[iz,i]  = layer( igas, rho_p[i], 
                 #t,p layers, then t.p levels below and above
                 t_mid[iz], p_mid[iz], t_top[iz], t_top[iz+1], p_top[iz], p_top[iz+1],
                 kz[iz], mixl[iz], gravity, mw_atmos, gas_mw[i], q_below,  
-                supsat, fsed, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
+                supsat, fsed_bot, ftop, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
                 sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor, #all scalars
                 og_vfall, z_cld
             )
@@ -629,7 +638,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
 
 def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     kz, mixl, gravity, mw_atmos, gas_mw, q_below,
-    supsat, fsed, b, eps, z_top, z_bot, z_alpha, z_min, param,
+    supsat, fsed, f_top, b, eps, z_top, z_bot, z_alpha, z_min, param,
     sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor,
     og_vfall, z_cld):
     """
@@ -667,7 +676,9 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     supsat : float 
         Super saturation factor
     fsed : float
-        Sedimentation efficiency coefficient (unitless) 
+        Sedimentation efficiency coefficient (unitless)
+    f_top : float
+        Sedimentation efficiency coefficient at top of Layer (unitless)
     b : float
         Denominator of exponential in sedimentation efficiency  (if param is 'exp')
     eps: float
@@ -797,10 +808,19 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
             z_sub = z_bot_sub + scale_h * np.log( p_bot_sub/p_sub ) # midpoint of layer 
             ################################################
             t_sub = t_bot + np.log( p_bot/p_sub )*dtdlnp
+
+            # interpolate to cell center value if fsed is input as array
+            if param == 'array':
+                dfdlnp = (f_top - fsed) / dlnp  # fsed gradient
+                fsed_in = fsed + np.log( p_bot/p_sub )*dfdlnp
+            # pass input value otherwise
+            else:
+                fsed_in = fsed
+
             qt_top, qc_sub, qt_sub, rg_sub, reff_sub,ndz_sub, z_cld, fsed_layer = calc_qc(
                     gas_name, supsat, t_sub, p_sub,r_atmos, r_cloud,
                         qt_below, mixl, dz_sub, gravity,mw_atmos,mfp,visc,
-                        rho_p,w_convect, fsed, b, eps, param, z_bot_sub, z_sub, z_alpha, z_min,
+                        rho_p,w_convect, fsed_in, b, eps, param, z_bot_sub, z_sub, z_alpha, z_min,
                         sig,mh, rmin, nrad, og_vfall,z_cld)
 
 
@@ -988,7 +1008,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer
         #        qlo = qlo/10
         #
         #qt_top = qt_top.root
-        if param == "const":
+        if param in ["const", 'array']:
             qt_top = qvs + (q_below - qvs) * np.exp(-fsed * dz_layer / mixl)
         elif param == "exp":
             fs = fsed / np.exp(z_alpha / b)
@@ -1155,8 +1175,8 @@ class Atmosphere():
         df : dataframe or dict
             Dataframe with "pressure"(bars),"temperature"(K). MUST have at least two 
             columns with names "pressure" and "temperature". 
-            Optional columns include the eddy diffusion "kz" in cm^2/s CGS units, and 
-            the convective heat flux 'chf' also in cgs (e.g. sigma_csg T^4)
+            Optional columns include the eddy diffusion "kz" in cm^2/s CGS units,
+            the convective heat flux 'chf' also in cgs (e.g. sigma_csg T^4), and fsed
         filename : str 
             Filename read in. Will be read in with pd.read_csv and should 
             result in two named headers "pressure"(bars),"temperature"(K). 
@@ -1282,8 +1302,8 @@ class Atmosphere():
         df : dataframe or dict
             Dataframe from input with "pressure"(bars),"temperature"(K). MUST have at least two 
             columns with names "pressure" and "temperature". 
-            Optional columns include the eddy diffusion "kz" in cm^2/s CGS units, and 
-            the convective heat flux 'chf' also in cgs (e.g. sigma_csg T^4)
+            Optional columns include the eddy diffusion "kz" in cm^2/s CGS units,
+            the convective heat flux 'chf' also in cgs (e.g. sigma_csg T^4), and fsed
         constant_kz : float
             Constant value for kz, if kz is supplied in df or filename, 
             it will inheret that value and not use this constant_value
@@ -1301,6 +1321,10 @@ class Atmosphere():
             Minimum Kz value. This will reset everything below kz_min to kz_min. 
             Default = 1e5 cm2/s
         """
+
+        # allow to set fsed with dictionary entry
+        if 'fsed' in df.keys():
+            self.fsed = np.array(df['fsed'])
 
         #MIXING LENGTH ASSUMPTIONS 
         if latent_heat:
