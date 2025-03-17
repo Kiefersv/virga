@@ -1,3 +1,6 @@
+""" Cloud structure calculation according to the EddySed description """
+# pylint: disable=R0912,R0913,R0914,R0915,R0917
+
 import numpy as np
 from scipy import optimize
 
@@ -5,9 +8,9 @@ from . import pvaps
 from .root_functions import vfall_find_root, solve_force_balance, qvs_below_model, vfall
 
 #   universal gas constant (erg/mol/K)
-rgas = 8.3143e7
-avog = 6.02e23
-kb = rgas / avog
+RGAS = 8.3143e7
+AVOG = 6.02e23
+KB = RGAS / AVOG
 
 def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rho_p,
                    mw_atmos, gravity, kz, mixl, fsed, b, eps, scale_h, z_top, z_alpha,
@@ -214,7 +217,7 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
                 sig,mh, rmin, nrad, d_molecule, eps_k, c_p_factor, og_vfall, z_cld, mixed
             )
 
-            qc_path = (qc_path + qc[iz] * (p_top[iz+1] - p_top[iz]) / gravity)
+            qc_path = qc_path + qc[iz] * (p_top[iz+1] - p_top[iz]) / gravity
 
         # assign cloud height for each species
         z_cld_out = z_cld
@@ -338,19 +341,19 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     rg_layer = np.zeros(lg)
 
     # define pysical parameters
-    r_atmos = rgas / mw_atmos  # specific gas constant for atmosphere (erg/K/g)
-    r_cloud = rgas / gas_mw  # specific gas constant for cloud (erg/K/g)
+    r_atmos = RGAS / mw_atmos  # specific gas constant for atmosphere (erg/K/g)
+    r_cloud = RGAS / gas_mw  # specific gas constant for cloud (erg/K/g)
     dp_layer = p_bot - p_top  # pressure thickness of layer
     dlnp = np.log(p_bot / p_top)  # log pressure thickness
     dtdlnp = (t_top - t_bot) / dlnp  # temperature gradient
     scale_h = r_atmos * t_layer / gravity  # atmospheric scale height (cm)
     w_convect = kz / mixl   # convective velocity scale (cm/s) from mixing length theory
-    n_atmos = p_layer / (kb * t_layer)  # atmospheric number density (molecules/cm^3)
+    n_atmos = p_layer / (KB * t_layer)  # atmospheric number density (molecules/cm^3)
     mfp = 1./(np.sqrt(2.)*n_atmos*np.pi*d_molecule**2) # atmospheric mean free path (cm)
 
     # atmospheric viscosity (dyne s/cm^2), QN B2 in A & M 2001, originally Rosner+2000
     # Rosner, D.E. 2000, Transport Processes in Chemically Reacting Flow Systems
-    visc = (5./16. * np.sqrt(np.pi * kb * t_layer * (mw_atmos / avog)) /
+    visc = (5./16. * np.sqrt(np.pi * KB * t_layer * (mw_atmos / AVOG)) /
             (np.pi * d_molecule**2) / (1.22 * (t_layer / eps_k)**(-0.16)))
 
     #   Top of convergence loop
@@ -421,7 +424,8 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     # Update properties at bottom of next layer
     # !!! Do not change this lane, it will break the code !!!
     for q, qt in enumerate(qt_top):
-        if mixed and q == lg-1: continue  # skip mixed entry
+        if mixed and q == lg-1:
+            continue  # skip mixed entry
         q_below[q] = qt
 
     # Get layer averages where odp is not 0
@@ -664,7 +668,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
         # calculate the fall velocity for each radius in the radius bin
         r_, rup, dr = get_r_grid(r_min=rmin, n_radii=nrad)
         vfall_temp = []
-        for j in range(len(r_)):
+        for j, _ in enumerate(r_):
             if og_vfall:
                 # use the analytic solution to the fall speed
                 vfall_temp.append(vfall(r_[j], gravity, mw_atmos, mfp, visc,

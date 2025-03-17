@@ -6,6 +6,7 @@ import os
 from scipy import optimize
 
 from .mixed_clouds import _eddysed_mixed
+from .mixed_optics import _calc_optics_mixed
 from .root_functions import advdiff, vfall,vfall_find_root,qvs_below_model, find_cond_t, solve_force_balance
 from .calc_mie import fort_mie_calc, calc_new_mieff
 from . import gas_properties
@@ -145,9 +146,10 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             
     #Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
     #albedo, and asymmetry parameter. TODO ????
-    # opd, w0, g0, opd_gas = calc_optics(nwave, qc, qt, rg, reff, ndz,radius,
-    #                                    dr,qext, qscat,cos_qscat,atmo.sig, rmin, nradii,verbose=atmo.verbose)
-    opd, w0, g0, opd_gas = (0, 0, 0, 0)
+    opd, w0, g0, opd_gas = _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wave_in,
+        qext, qscat, cos_qscat, atmo.sig, rmin, atmo.verbose, directory, mixed,
+        False, condensibles, rho_p
+    )
 
     if as_dict:
         if atmo.param == 'exp':
@@ -1531,8 +1533,8 @@ def calc_mie_db(gas_name, dir_refrind, dir_out, rmin = 1e-8, rmax = 5.4239131e-2
 
         if i==0:
             #all these files need to be on the same grid
-            #radius, rup, dr = get_r_grid(r_min = rmin, n_radii = nradii)
-            radius, rup, dr = get_r_grid_w_max(r_min=rmin, r_max=rmax, n_radii=nradii)
+            radius, rup, dr = get_r_grid(r_min = rmin, n_radii = nradii)
+            # radius, rup, dr = get_r_grid_w_max(r_min=rmin, r_max=rmax, n_radii=nradii)
 
             qext_all=np.zeros(shape=(nwave,nradii,ngas))
             qscat_all = np.zeros(shape=(nwave,nradii,ngas))
@@ -1593,7 +1595,7 @@ def get_mie(gas, directory):
     qext = df['qext'].values.reshape((nradii,nwave)).T
     cos_qscat = df['cos_qscat'].values.reshape((nradii,nwave)).T
 
-    return qext,qscat, cos_qscat, nwave, radii,wave
+    return qext,qscat, cos_qscat, nwave, radii, wave
 
 def get_refrind(igas,directory): 
     """
