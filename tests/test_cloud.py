@@ -1,3 +1,5 @@
+""" Tests for all functionality of VIRGA """
+
 import numpy as np
 import astropy.units as u
 
