@@ -17,8 +17,8 @@ from .direct_mmr_solver import direct_solver
 
 
 def compute(atmo, directory = None, as_dict = True, og_solver = True, 
-    direct_tol=1e-15, refine_TP = True, og_vfall=True, analytical_rg = True,
-    do_virtual=True, mixed=False):
+            direct_tol=1e-15, refine_TP = True, og_vfall=True, analytical_rg = True,
+            do_virtual=True, size_distribution='lognormal', mixed=False):
 
     """
     Top level program to run eddysed. Requires running `Atmosphere` class 
@@ -51,6 +51,9 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
     do_virtual : bool 
         If the user adds an upper bound pressure that is too low. There are cases where a cloud wants to 
         form off the grid towards higher pressures. This enables that.
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
     mixed : bool, optional
         If true, cloud particles are assumed to be able to mix together.
 
@@ -126,7 +129,7 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param, mh,
             atmo.sig, rmin, nradii, atmo.d_molecule, atmo.eps_k, atmo.c_p_factor,
             og_vfall, supsat=atmo.supsat,verbose=atmo.verbose,do_virtual=do_virtual,
-            mixed=mixed)
+            size_distribution=size_distribution, mixed=mixed)
 
         pres_out = atmo.p_layer
         temp_out = atmo.t_layer

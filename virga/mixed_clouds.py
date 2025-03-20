@@ -3,6 +3,7 @@
 
 import numpy as np
 from scipy import optimize
+from scipy.special import gamma
 
 from . import pvaps
 from .root_functions import vfall_find_root, solve_force_balance, qvs_below_model, vfall
@@ -15,7 +16,9 @@ KB = RGAS / AVOG
 def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rho_p,
                    mw_atmos, gravity, kz, mixl, fsed, b, eps, scale_h, z_top, z_alpha,
                    z_min, param, mh, sig, rmin, nrad, d_molecule, eps_k, c_p_factor,
-                   og_vfall=True, do_virtual=True, supsat=0, verbose=False, mixed=False):
+                   og_vfall=True, do_virtual=True, supsat=0, verbose=False,
+                   size_distribution='lognormal', mixed=False,
+                   ):
     """
     Given an atmosphere and condensates, calculate size and concentration
     of condensates in balance between eddy diffusion and sedimentation.
@@ -87,6 +90,9 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
         species condenses below the model domain.
     supsat : float, optional
         Default = 0 , Saturation factor (after condensation)
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
     mixed : bool, optional
         If true, cloud particles are assumed to be able to mix together.
 
@@ -197,9 +203,9 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
                         np.asarray([rho_p[i]]), t_layer_virtual, p_layer_virtual,
                         t_bot, t_base, p_bot, p_base, kz[-1], mixl[-1], gravity,
                         mw_atmos, np.asarray([gas_mw[i]]), np.asarray([q_below[i]]),
-                        supsat, fsed, b, eps, z_bot, z_base, z_alpha, z_min, param,
+                        supsat, fsed[-1], fsed[-1], b, eps, z_bot, z_base, z_alpha, z_min, param,
                         sig, mh, rmin, nrad, d_molecule, eps_k, c_p_factor, og_vfall,
-                        z_cld, mixed=False
+                        z_cld, size_distribution, mixed=False
                     )
 
                 # in case no cloud was found, let the user know
@@ -225,7 +231,7 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
                 p_top[iz+1], kz[iz], mixl[iz], gravity, mw_atmos, gas_mw, q_below,
                 supsat, fsed_bot, ftop, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min,
                 param, sig, mh, rmin, nrad, d_molecule, eps_k, c_p_factor, og_vfall,
-                z_cld, mixed
+                z_cld, size_distribution, mixed
             )
 
             qc_path = qc_path + qc[iz] * (p_top[iz+1] - p_top[iz]) / gravity
@@ -240,7 +246,7 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
           kz, mixl, gravity, mw_atmos, gas_mw, q_below,
           supsat, fsed, f_top, b, eps, z_top, z_bot, z_alpha, z_min, param,
           sig, mh, rmin, nrad, d_molecule, eps_k, c_p_factor,
-          og_vfall, z_cld, mixed):
+          og_vfall, z_cld, size_distribution, mixed):
     """
     Calculate layer condensate properties by iterating on optical depth
     in one model layer (convering on optical depth over sublayers)
@@ -315,6 +321,9 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
         increasing temperature
     og_vfall : bool
         True = analytic fall speed calculation, False = force balance
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
     mixed : bool, optional
         If true, cloud particles are assumed to be able to mix together.
 
@@ -409,7 +418,7 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
                 gas_name, supsat, t_sub, p_sub, r_atmos, r_cloud, qt_bot_sub, mixl,
                 dz_sub, gravity, mw_atmos, mfp, visc, rho_p, w_convect, fsed_in, b, eps,
                 param, z_bot_sub, z_sub, z_alpha, z_min, sig, mh, rmin, nrad, og_vfall,
-                z_cld, mixed
+                z_cld, size_distribution, mixed
             )
 
             # vertical sums
@@ -465,7 +474,7 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
 def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
             dz_layer, gravity, mw_atmos, mfp, visc, rho_p, w_convect, fsed, b,
             eps, param, z_bot, z_layer, z_alpha, z_min, sig, mh, rmin, nrad,
-            og_vfall=True, z_cld=None, mixed=False):
+            og_vfall=True, z_cld=None, size_distribution='lognormal', mixed=False):
     """
     Calculate condensate optical depth and effective radius for a layer,
     assuming geometric scatterers.
@@ -529,6 +538,9 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
         True = analytic fall speed calculation, False = force balance
     z_cld : flaot
         altitude of cloud
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
     mixed : bool, optional
         If true, cloud particles are assumed to be able to mix together.
 
@@ -721,11 +733,36 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
                                        p0=[0], bounds=(-np.inf, np.inf))
         alpha = pars[0]
 
+        # calculate size distribution depending factors
+        if size_distribution == 'lognormal':
+            fac_2 = np.exp(4*np.log( sig )**2/2)
+            fac_3 = np.exp(9*np.log( sig )**2/2)
+            fac_3pa = np.exp((3+alpha)**2*np.log( sig )**2/2)
+            #fac_3pa_3 = np.exp((alpha+6)*np.log(sig)**2/2)
+        elif size_distribution == 'exponential':
+            fac_2 = gamma(2)
+            fac_3 = gamma(3)
+            fac_3pa = gamma(3+alpha)
+        elif size_distribution == 'gamma':
+            fac_2 = gamma(2+sig) / gamma(sig)
+            fac_3 = gamma(3+sig) / gamma(sig)
+            fac_3pa = gamma(3+alpha+sig) / gamma(sig)
+        elif size_distribution == 'monodisperse':
+            fac_2 = 1
+            fac_3 = 1
+            fac_3pa = 1
+        else:
+            raise ValueError(size_distribution + ' distribution not known.')
+
+        # additional prefactors used
+        fac_3pa_3 = fac_3pa / fac_3
+        fac_2_3 = fac_2 / fac_3
+
         # geometric mean radius of lognormal size distribution, EQN. 13 A&M
-        rg_layer[i] = (fsed_mid**(1. / alpha) * rw_layer * np.exp(-(alpha + 6) * lnsig2))
+        rg_layer[i] = (fsed_mid**(1. / alpha) * rw_layer / fac_3pa_3)
 
         # droplet effective radius (cm)
-        reff_layer[i] = rg_layer[i] * np.exp(5 * lnsig2)
+        reff_layer[i] = rg_layer[i] / fac_2_3
 
     # ===============================================================================
     # Calculate the cloud particle number densities
@@ -734,7 +771,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
     # column droplet number concentration (cm^-2), EQN. 14 A&M
     if rg_layer > 0:
         ndz_layer = (3 * rho_atmos * qc_layer * dz_layer /
-                    (4 * np.pi * rho_p * rg_layer**3) * np.exp(-9 * lnsig2))
+                    (4 * np.pi * rho_p * rg_layer**3) / fac_3)
     else:
         ndz_layer = np.zeros_like(qc_layer)
 

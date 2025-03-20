@@ -21,6 +21,21 @@ def test_virga_single_cloud():
     assert np.isclose(np.sum(all_out['mean_particle_r']), 213.68473817971767)
     assert np.isclose(np.sum(np.nan_to_num(all_out['column_density'])), 2184.11033113616)
 
+def test_virga_size_distribution():
+    # initialise atmosphere
+    a = jdi.Atmosphere(['MnS'], fsed=1, mh=1, mmw=2.2)
+    a.gravity(gravity=7.460, gravity_unit=u.Unit('m/(s**2)'))
+    a.ptk(df=jdi.hot_jupiter())
+
+    # calculate different size distributions
+    # -> lognormal is already coverd with the basic test (test_virga_single_cloud)
+    all_out = jdi.compute(a, as_dict=True, directory='.', size_distribution='gamma')
+    assert np.isclose(np.sum(all_out['droplet_eff_r']), 731.8320795077024)
+    all_out = jdi.compute(a, as_dict=True, directory='.', size_distribution='exponential')
+    assert np.isclose(np.sum(all_out['droplet_eff_r']), 649.8009567173674)
+    all_out = jdi.compute(a, as_dict=True, directory='.', size_distribution='monodisperse')
+    assert np.isclose(np.sum(all_out['droplet_eff_r']), 1195.0939223236237)
+
 def test_virga_fsed():
     # Note: constant fsed is tested in test_virga_single_cloud()
 
