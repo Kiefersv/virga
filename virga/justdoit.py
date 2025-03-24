@@ -466,7 +466,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
     kz : float or ndarray
         Kzz in cgs, either float or ndarray depending of whether or not 
         it is set as input
-    fsed : float 
+    fsed : float or ndarray
         Sedimentation efficiency coefficient, unitless
     b : float
         Denominator of exponential in sedimentation efficiency  (if param is 'exp')
@@ -542,6 +542,16 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
 
     for i, igas in zip(range(ngas), condensibles):
 
+        # check if fsed is an array and adjust accordingly
+        fsed_in = fsed  # default: if not an array, just pass the input value
+        if isinstance(fsed, np.ndarray):
+            # check if fsed is the same for all species (only pressure dependence)
+            if len(fsed.shape) == 1:
+                fsed_in = fsed
+            # if there is a fsed per species, read out the current one
+            if len(fsed.shape) == 2:
+                fsed_in = fsed[:, i]
+
         q_below = gas_mmr[i]
 
         #include decrease in condensate mixing ratio below model domain
@@ -604,7 +614,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
                         #t,p layers, then t.p levels below and above
                         t_layer_virtual, p_layer_virtual, t_bot,t_base, p_bot, p_base,
                         kz[-1], mixl[-1], gravity, mw_atmos, gas_mw[i], q_below,
-                        supsat, fsed, b, eps, z_bot, z_base, z_alpha, z_min, param,
+                        supsat, fsed_in[-1], b, eps, z_bot, z_base, z_alpha, z_min, param,
                         sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor, #all scalaers
                         og_vfall, z_cld
                     )
@@ -614,8 +624,8 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
 
             # select index of fsed, array fsed uses two for interpolation
             if param == 'array':
-                fsed_bot = fsed[iz]
-                ftop = fsed[iz+1]
+                fsed_bot = fsed_in[iz]
+                ftop = fsed_in[iz+1]
             # exp, and const are calculated later using input values
             else:
                 fsed_bot = fsed
