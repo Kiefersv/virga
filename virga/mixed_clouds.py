@@ -583,6 +583,22 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
     z_cld = np.zeros(lg)
     fsed_mid = np.zeros(lg)
 
+    # calculate size distribution depending factors
+    if size_distribution == 'lognormal':
+        fac_2 = np.exp(4*np.log( sig )**2/2)
+        fac_3 = np.exp(9*np.log( sig )**2/2)
+    elif size_distribution == 'exponential':
+        fac_2 = gamma(2)
+        fac_3 = gamma(3)
+    elif size_distribution == 'gamma':
+        fac_2 = gamma(2+sig) / gamma(sig)
+        fac_3 = gamma(3+sig) / gamma(sig)
+    elif size_distribution == 'monodisperse':
+        fac_2 = 1
+        fac_3 = 1
+    else:
+        raise ValueError(size_distribution + ' distribution not known.')
+
     # ===================================================================================
     # Step 1: calculate the cloud mass mixing ratio for each species individually
     # ===================================================================================
@@ -681,7 +697,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
                 if og_vfall:
                     rw_temp = optimize.root_scalar(vfall_find_root,
                         bracket=[rlo, rhi], method='brentq', args=(gravity, mw_atmos,
-                        mfp, visc, t_layer,p_layer, rho_p[i], w_convect)
+                        mfp, visc, t_layer, p_layer, rho_p[i], w_convect)
                     )
                     rw_layer = rw_temp.root
                 # balance forces to arrive at solution
@@ -735,21 +751,12 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
 
         # calculate size distribution depending factors
         if size_distribution == 'lognormal':
-            fac_2 = np.exp(4*np.log( sig )**2/2)
-            fac_3 = np.exp(9*np.log( sig )**2/2)
             fac_3pa = np.exp((3+alpha)**2*np.log( sig )**2/2)
-            #fac_3pa_3 = np.exp((alpha+6)*np.log(sig)**2/2)
         elif size_distribution == 'exponential':
-            fac_2 = gamma(2)
-            fac_3 = gamma(3)
             fac_3pa = gamma(3+alpha)
         elif size_distribution == 'gamma':
-            fac_2 = gamma(2+sig) / gamma(sig)
-            fac_3 = gamma(3+sig) / gamma(sig)
             fac_3pa = gamma(3+alpha+sig) / gamma(sig)
         elif size_distribution == 'monodisperse':
-            fac_2 = 1
-            fac_3 = 1
             fac_3pa = 1
         else:
             raise ValueError(size_distribution + ' distribution not known.')
@@ -769,11 +776,10 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
     # ===============================================================================
 
     # column droplet number concentration (cm^-2), EQN. 14 A&M
-    if rg_layer > 0:
-        ndz_layer = (3 * rho_atmos * qc_layer * dz_layer /
-                    (4 * np.pi * rho_p * rg_layer**3) / fac_3)
-    else:
-        ndz_layer = np.zeros_like(qc_layer)
+    ndz_layer = np.zeros_like(qc_layer)
+    mask = rg_layer > 0
+    ndz_layer[mask] = (3 * rho_atmos * qc_layer[mask] * dz_layer /
+                      (4 * np.pi * rho_p[mask] * rg_layer[mask]**3) / fac_3)
 
     return (qt_top, qc_layer, qt_layer, rg_layer, reff_layer, ndz_layer, z_cld,
             fsed_mid, rho_p)
