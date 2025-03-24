@@ -479,7 +479,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
     kz : float or ndarray
         Kzz in cgs, either float or ndarray depending of whether or not 
         it is set as input
-    fsed : float 
+    fsed : float or ndarray
         Sedimentation efficiency coefficient, unitless
     b : float
         Denominator of exponential in sedimentation efficiency  (if param is 'exp')
@@ -555,6 +555,16 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
 
     for i, igas in zip(range(ngas), condensibles):
 
+        # check if fsed is an array and adjust accordingly
+        fsed_in = fsed  # default: if not an array, just pass the input value
+        if isinstance(fsed, np.ndarray):
+            # check if fsed is the same for all species (only pressure dependence)
+            if len(fsed.shape) == 1:
+                fsed_in = fsed
+            # if there is a fsed per species, read out the current one
+            if len(fsed.shape) == 2:
+                fsed_in = fsed[:, i]
+
         q_below = gas_mmr[i]
 
         #include decrease in condensate mixing ratio below model domain
@@ -617,7 +627,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
                         #t,p layers, then t.p levels below and above
                         t_layer_virtual, p_layer_virtual, t_bot,t_base, p_bot, p_base,
                         kz[-1], mixl[-1], gravity, mw_atmos, gas_mw[i], q_below,
-                        supsat, fsed, b, eps, z_bot, z_base, z_alpha, z_min, param,
+                        supsat, fsed_in[-1], b, eps, z_bot, z_base, z_alpha, z_min, param,
                         sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor, #all scalaers
                         og_vfall, z_cld
                     )
@@ -625,11 +635,20 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
         z_cld=None
         for iz in range(nz-1,-1,-1): #goes from BOA to TOA
 
+            # select index of fsed, array fsed uses two for interpolation
+            if param == 'array':
+                fsed_bot = fsed_in[iz]
+                ftop = fsed_in[iz+1]
+            # exp, and const are calculated later using input values
+            else:
+                fsed_bot = fsed
+                ftop = None  # only used for array input
+
             qc[iz,i], qt[iz,i], rg[iz,i], reff[iz,i],ndz[iz,i],q_below, z_cld, fsed_layer[iz,i]  = layer( igas, rho_p[i], 
                 #t,p layers, then t.p levels below and above
                 t_mid[iz], p_mid[iz], t_top[iz], t_top[iz+1], p_top[iz], p_top[iz+1],
                 kz[iz], mixl[iz], gravity, mw_atmos, gas_mw[i], q_below,  
-                supsat, fsed, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
+                supsat, fsed_bot, ftop, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
                 sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor, #all scalars
                 og_vfall, z_cld
             )
@@ -642,7 +661,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
 
 def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     kz, mixl, gravity, mw_atmos, gas_mw, q_below,
-    supsat, fsed, b, eps, z_top, z_bot, z_alpha, z_min, param,
+    supsat, fsed, f_top, b, eps, z_top, z_bot, z_alpha, z_min, param,
     sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor,
     og_vfall, z_cld):
     """
@@ -680,7 +699,9 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     supsat : float 
         Super saturation factor
     fsed : float
-        Sedimentation efficiency coefficient (unitless) 
+        Sedimentation efficiency coefficient (unitless)
+    f_top : float
+        Sedimentation efficiency coefficient at top of Layer (unitless)
     b : float
         Denominator of exponential in sedimentation efficiency  (if param is 'exp')
     eps: float
@@ -810,10 +831,19 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
             z_sub = z_bot_sub + scale_h * np.log( p_bot_sub/p_sub ) # midpoint of layer 
             ################################################
             t_sub = t_bot + np.log( p_bot/p_sub )*dtdlnp
+
+            # interpolate to cell center value if fsed is input as array
+            if param == 'array':
+                dfdlnp = (f_top - fsed) / dlnp  # fsed gradient
+                fsed_in = fsed + np.log( p_bot/p_sub )*dfdlnp
+            # pass input value otherwise
+            else:
+                fsed_in = fsed
+
             qt_top, qc_sub, qt_sub, rg_sub, reff_sub,ndz_sub, z_cld, fsed_layer = calc_qc(
                     gas_name, supsat, t_sub, p_sub,r_atmos, r_cloud,
                         qt_below, mixl, dz_sub, gravity,mw_atmos,mfp,visc,
-                        rho_p,w_convect, fsed, b, eps, param, z_bot_sub, z_sub, z_alpha, z_min,
+                        rho_p,w_convect, fsed_in, b, eps, param, z_bot_sub, z_sub, z_alpha, z_min,
                         sig,mh, rmin, nrad, og_vfall,z_cld)
 
 
@@ -1001,7 +1031,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer
         #        qlo = qlo/10
         #
         #qt_top = qt_top.root
-        if param == "const":
+        if param in ["const", 'array']:
             qt_top = qvs + (q_below - qvs) * np.exp(-fsed * dz_layer / mixl)
         elif param == "exp":
             fs = fsed / np.exp(z_alpha / b)
