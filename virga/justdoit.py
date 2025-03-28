@@ -69,6 +69,10 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
     mh = atmo.mh
     condensibles = atmo.condensibles
 
+    # if mixed species are already added here remove them, they should only be added later
+    if 'mixed' in condensibles:
+        condensibles.remove('mixed')
+
     ngas = len(condensibles)
 
     gas_mw = np.zeros(ngas)
@@ -77,7 +81,6 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
 
     # scale-height for fsed taken at Teff (default: temp at 1bar) 
     H = atmo.r_atmos * atmo.Teff / atmo.g
-    
     
     #### First we need to either grab or compute Mie coefficients #### 
     for i, igas in zip(range(ngas),condensibles) : 

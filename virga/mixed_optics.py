@@ -261,6 +261,12 @@ def _mixed_mie(gas_name, refidx, qc, radius, rup, wavelength, rhop):
     cos_qsca = np.zeros((nz, nw, nr))
 
     for z in range(nz):
+
+        # check if there is no material, if so, set all 0
+        if np.sum(qc[z, :-1]) <= 0:
+            qext[z], qsca[z], cos_qsca[z] = (0, 0, 0)
+            continue
+
         # dielectric constant of the mixture
         e_eff = complex(0, 0)
         # read in data that was not previously loded

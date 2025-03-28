@@ -17,7 +17,7 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
                    mw_atmos, gravity, kz, mixl, fsed, b, eps, scale_h, z_top, z_alpha,
                    z_min, param, mh, sig, rmin, nrad, d_molecule, eps_k, c_p_factor,
                    og_vfall=True, do_virtual=True, supsat=0, verbose=False,
-                   size_distribution='lognormal', mixed=False,
+                   size_distribution='lognormal', mixed=False
                    ):
     """
     Given an atmosphere and condensates, calculate size and concentration
@@ -148,6 +148,21 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
     # set working arrays
     q_below = gas_mmr  # mass mixing ratios at bottom of the atmosphere
 
+    # make all fseds to arrays
+    if isinstance(fsed, np.ndarray):
+        # check if fsed is the same for all species (only pressure dependence)
+        if len(fsed.shape) == 1:
+            fsed_array = np.ones((nz+1, ngas)) * fsed[:, np.newaxis]
+        # if there is a fsed per species, read out the current one
+        elif len(fsed.shape) == 2:
+            fsed_array = fsed
+        else:
+            raise ValueError('Fsed should have either 1 or 2 dimensions.')
+    else:
+        # if fsed is constant or exp, apply the same value for all cases
+        fsed_array = np.ones((nz+1, ngas)) * fsed
+
+
     # include decrease in condensate mixing ratio below model domain
     if do_virtual:
         for i, igas in zip(range(ngas), condensibles):
@@ -199,13 +214,13 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
                     t_layer_virtual = t_bot + np.log10(p_bot/p_layer_virtual)*dtdlnp
 
                     # overwrite q_below from this output for the next routine
-                    _, _, _, _, _, q_below[i], _, _ = layer([igas],
-                        np.asarray([rho_p[i]]), t_layer_virtual, p_layer_virtual,
+                    _, _, _, _, _, q_below[i], _, _ = layer(
+                        [igas], np.asarray([rho_p[i]]), t_layer_virtual, p_layer_virtual,
                         t_bot, t_base, p_bot, p_base, kz[-1], mixl[-1], gravity,
                         mw_atmos, np.asarray([gas_mw[i]]), np.asarray([q_below[i]]),
-                        supsat, fsed[-1], fsed[-1], b, eps, z_bot, z_base, z_alpha, z_min, param,
-                        sig, mh, rmin, nrad, d_molecule, eps_k, c_p_factor, og_vfall,
-                        z_cld, size_distribution, mixed=False
+                        supsat, np.asarray([fsed_array[-1, i]]), np.asarray([fsed_array[-1, i]]),
+                        b, eps, z_bot, z_base, z_alpha, z_min, param, sig, mh, rmin, nrad, d_molecule,
+                        eps_k, c_p_factor, og_vfall, z_cld, size_distribution, mixed=False
                     )
 
                 # in case no cloud was found, let the user know
@@ -218,12 +233,11 @@ def _eddysed_mixed(t_top, p_top, t_mid, p_mid, condensibles, gas_mw, gas_mmr, rh
         for iz in range(nz-1,-1,-1): #goes from bottom to top of the atmosphere
 
             # select index of fsed, array fsed uses two for interpolation
+            fsed_bot = fsed_array[iz]
             if param == 'array':
-                fsed_bot = fsed[iz]
-                ftop = fsed[iz+1]
-            # exp, and const are calculated later using input values
+                ftop = fsed_array[iz+1]
+            # exp, and const do not need the top pressure
             else:
-                fsed_bot = fsed
                 ftop = None  # only used for array input
 
             qc[iz], qt[iz], rg[iz], reff[iz], ndz[iz], _, z_cld, _ = layer(condensibles,
@@ -437,13 +451,14 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
                                (rho_p_out[mask] * reff_sub[mask]))
 
         # Check convergence on optical depth
+        mask = opd_layer != 0  # prevent division by 0
         if nsub_max == 1:  # do not use sublayering
             converge = True
         elif nsub == 1:  # 1st it. is used to determine convergence
             opd_test = opd_layer
         elif (opd_layer == 0.).all() or (nsub >= nsub_max):  # break condition
             converge = True
-        elif (abs(1. - opd_test / opd_layer) <= 1e-2).all():  # convergence
+        elif (abs(1. - opd_test[mask] / opd_layer[mask]) <= 1e-2).all():  # convergence
             converge = True
         else:  # no convergence, start over again
             opd_test = opd_layer
@@ -459,7 +474,7 @@ def layer(gas_name, rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
         q_below[q] = qt
 
     # Get layer averages where odp is not 0
-    mask = opd_layer > 0
+    mask = (rho_p_out * opd_layer) > 0
     reff_layer[mask] = 1.5 * qc_layer[mask] / (rho_p_out[mask] * opd_layer[mask])
     lnsig2 = 0.5 * np.log(sig) ** 2
     rg_layer[mask] = reff_layer[mask] * np.exp(-5 * lnsig2)
@@ -636,10 +651,10 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
 
             # solution for constant fsed
             if param in ["const", "array"]:
-                qt_top[i] = qvs + (q_below[i] - qvs) * np.exp(-fsed * dz_layer / mixl)
+                qt_top[i] = qvs + (q_below[i] - qvs) * np.exp(-fsed[i] * dz_layer / mixl)
             # solution for exponentially parametrisation
             elif param == "exp":
-                fs = fsed / np.exp(z_alpha / b)
+                fs = fsed[i] / np.exp(z_alpha / b)
                 qt_top[i] = qvs + (q_below[i] - qvs) * np.exp(-b*fs/mixl*np.exp(z_bot/b)
                             * (np.exp(dz_layer / b) - 1) + eps * dz_layer / mixl)
             # error if otherwise
@@ -672,10 +687,10 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
 
     # fsed at middle of layer
     if param == 'exp':
-        fs = fsed / np.exp(z_alpha / b)
+        fs = fsed[i] / np.exp(z_alpha / b)
         fsed_mid = fs * np.exp(z_layer / b) + eps
     else:  # 'const'
-        fsed_mid = fsed
+        fsed_mid = fsed[i]
 
     # loop over all cloud particle species
     for i, gas in enumerate(gas_name):
