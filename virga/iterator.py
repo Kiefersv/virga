@@ -267,6 +267,9 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
         - 'fsed': settling parameter
         - 'condensate_mmr': qc, mass mixing ratio of solid materials
         - 'cond_plus_gas_mmr': qt, mass mixing ratio of solid and gas
+        - 'particle_density': cloud particle number density,
+        - 'mean_particle_r': geometric radius [cm],
+        - 'droplet_eff_r': effective radius [cm],
         - 'scalar_inputs': Additional scaler values:
             - 'mmw': mean molecular weight in amu
         - 'pressure': atmospheric pressure in bar
@@ -310,7 +313,7 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
         raise ValueError('Fsed parametrisation "' + atmo.param + '" not supported')
 
     # call the eddysed function to calculate cloud qc, and qt
-    qc, qt, rg, _, _, _, _, _ = _eddysed_mixed(atmo.t_level,
+    qc, qt, rg, rf, ndz, _, _, _ = _eddysed_mixed(atmo.t_level,
         atmo.p_level, atmo.t_layer, atmo.p_layer, atmo.condensibles, gas_mw, gas_mmr,
         rho_p , atmo.mmw, atmo.g, atmo.kz, atmo.mixl, fsed_in, atmo.b, atmo.eps,
         atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param, atmo.mh,
@@ -328,7 +331,9 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
         "temperature_unit":'kelvin',
         "condensate_mmr":qc,
         "cond_plus_gas_mmr":qt,
+        'particle_density': ndz/atmo.dz_pmid[:, np.newaxis],
         "mean_particle_r":rg*1e4,
+        "droplet_eff_r":rf*1e4,
         "scalar_inputs": {'mmw':atmo.mmw,},
         "layer_thickness":atmo.dz_layer,
         'kz':atmo.kz,
@@ -462,8 +467,8 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 
                     # else calculate the nucleation rate
                     ncl_tot[iz, ig] += _get_ccn_nucleation(
-                        gas_name, qt[iz, im], temp[iz], pres[iz], mmw, ncl_tot[iz, ig], nuc_eff
-                    )
+                        gas_name, qt[iz, im], temp[iz], pres[iz], mmw, ncl_tot[iz, ig]
+                    ) * nuc_eff
 
                     # mass mixing ratio
                     qcl_tot[iz, ig] += qc[iz, im] + qcl_in[iz, im] / fac_qcl
@@ -476,8 +481,8 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 
                 # else calculate the nucleation rate
                 ncl_tot[iz, ig] += _get_ccn_nucleation(
-                    igas, qt[iz, ig], temp[iz], pres[iz], mmw, ncl_tot[iz, ig], nuc_eff
-                )
+                    igas, qt[iz, ig], temp[iz], pres[iz], mmw, ncl_tot[iz, ig]
+                ) * nuc_eff
 
                 # mass mixing ratio
                 qcl_tot[iz, ig] = qc[iz, ig] + qcl_in[iz, ig] / fac_qcl
@@ -516,7 +521,7 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 # =======================================================================================
 #  Top level function to calculate nucleation number density
 preventer = []  # this variable remembers which warnings were already called
-def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in, nuc_eff,
+def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in, nuc_eff=1,
                         analytic_approximation=False):
     """
     This function balances nucleation rate and growth rate to find how much of the mmr
