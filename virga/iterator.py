@@ -23,6 +23,13 @@ AVOG = 6.02e23  # avogadro constant [1/mol]
 KB = RGAS / AVOG  # boltzmann constant [erg/K]
 PF = 1000000  # Reference pressure [dyn / cm2]
 
+# open the mcnt file and remember it
+file = os.path.dirname(__file__) + '/nucleation/mcnt.csv'
+data_mcnt = np.array(list(csv.reader(open(file))))
+# get the species names and their status
+specs_mcnt = np.asarray([data_mcnt[:, 0], data_mcnt[:, 1]]).T
+# a list of only the available species
+specs_mcnt_available = specs_mcnt[specs_mcnt[:, 1] != 'no', 0][1:]
 
 # =======================================================================================
 #  Main Computational functions
@@ -125,11 +132,13 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
         # ==== Original VIRGA calculation ===============================================
         # compute cloud structure with given fsed_in, here a lightweight version is used
         # which does not compute opacities just yet.
+        stv = time()
         all_out = _lightweight_compute(atmo, directory, og_vfall, do_virtual,
-                                    size_distribution, mixed)
+                                       size_distribution, mixed)
+        etv = time()
 
         # remember output
-        memory_virga.append(all_out)
+        memory_virga.append(all_out.copy())
 
         # ==== Adjustment for additional physics ========================================
         # values needed
@@ -142,10 +151,14 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
         kzz = all_out['kz']
 
         # Post-calculate cloud particle properties from virga mmrs
+        stp = time()
         fsed, ncl_tot, rg, qcl_tot = _top_down_property_calculator(
             atmo.condensibles, qc, qt, temp, pres, atmo.dz_layer, kzz, mmw, atmo.g,
             atmo.sig, size_distribution, mixed, nuc_eff
         )
+        etp = time()
+        print('')
+        print(etv - stv, etp - stp)
 
         # interpolate fsed from mid to edge values for next run
         fsed_w[0] = fsed[0]  # lower limit
@@ -163,6 +176,7 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
             fsed_damp[mask] = 10**((np.log10(fsed_w[mask]) + np.log10(atmo.fsed[mask]))/2)
         # assign value for next run
         atmo.fsed = fsed_damp
+
 
         # save new values
         memory_new.append(all_out)
@@ -250,6 +264,7 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
     -------
     dict
         Dictionary output that contains full output. This includes:
+        - 'fsed': settling parameter
         - 'condensate_mmr': qc, mass mixing ratio of solid materials
         - 'cond_plus_gas_mmr': qt, mass mixing ratio of solid and gas
         - 'scalar_inputs': Additional scaler values:
@@ -306,6 +321,7 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
 
     # store all outputs needed in dictionary
     output = {
+        "fsed": atmo.fsed,
         "pressure":atmo.p_layer/1e6,
         "pressure_unit":'bar',
         "temperature":atmo.t_layer,
@@ -445,8 +461,8 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 
                     # else calculate the nucleation rate
                     ncl_tot[iz, ig] += _get_ccn_nucleation(
-                        gas_name, qt[iz, im], temp[iz], pres[iz], mmw, ncl_tot[iz, ig]
-                    ) * nuc_eff
+                        gas_name, qt[iz, im], temp[iz], pres[iz], mmw, ncl_tot[iz, ig], nuc_eff
+                    )
 
                     # mass mixing ratio
                     qcl_tot[iz, ig] += qc[iz, im] + qcl_in[iz, im] / fac_qcl
@@ -459,8 +475,8 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 
                 # else calculate the nucleation rate
                 ncl_tot[iz, ig] += _get_ccn_nucleation(
-                    igas, qt[iz, ig], temp[iz], pres[iz], mmw, ncl_tot[iz, ig]
-                ) * nuc_eff
+                    igas, qt[iz, ig], temp[iz], pres[iz], mmw, ncl_tot[iz, ig], nuc_eff
+                )
 
                 # mass mixing ratio
                 qcl_tot[iz, ig] = qc[iz, ig] + qcl_in[iz, ig] / fac_qcl
@@ -484,6 +500,10 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
             for im, igas in enumerate(species[:-1]):
                 fsed[:, im] = fsed[:, -1]
 
+    # set reasonable limits
+    fsed[fsed>1e3] = 1e3
+    fsed[fsed<1e-3] = 1e-3
+
     # return fsed
     return fsed, ncl_tot, rg, qcl_tot
 
@@ -495,7 +515,7 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 # =======================================================================================
 #  Top level function to calculate nucleation number density
 preventer = []  # this variable remembers which warnings were already called
-def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in,
+def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in, nuc_eff,
                         analytic_approximation=False):
     """
     This function balances nucleation rate and growth rate to find how much of the mmr
@@ -516,6 +536,8 @@ def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in,
         total mass mixing ratio of spec (qt in eddysed lingo)
     ncl_in : float
         Number density of already present cloud particles.
+    nuc_eff : float
+        Nucleation efficiency. This parameter can be used to tune nucleation rates.
     analytic_approximation : bool, optional
         If true, a simplified analytic expression is used. This is faster and more
         stable but yields wrong results for mmr close to the saturation value.
@@ -526,20 +548,24 @@ def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in,
         Cloud particle number density from nucleation.
     """
 
-    # these species are calculated using modified CNT
-    if spec in ['SiO', 'Cr', 'KCl', 'NaCl', 'CsCl', 'H2O', 'NH3',
-                'H2S', 'CH4']:#, 'MnS']:
-        _, ncl = _fracs_elsie(
-            spec, mmr, temp, pres, mmw, ncl_in, analytic_approximation
-        )
-
-    # these species use the becker-doering method for nucleation
-    elif spec in ['TiO2']:
+    # If available, always use non-classical nucleation theory
+    if spec in []:#['TiO2']:
         _, ncl = _non_classical_nucleation(
-            spec, mmr, temp, pres, mmw, ncl_in, analytic_approximation
+            spec, mmr, temp, pres, mmw, ncl_in, nuc_eff, analytic_approximation
         )
 
-    # some species are known to not nucleate or no data is available
+    # Some species are a wired special case where there is MCNT data available, but it
+    # is uncertain if these species really nucleate. These species are excluded here.
+    elif spec in ['MgSiO3', 'Mg2SiO4', 'ZnS', 'Na2S']:
+        ncl = 0
+
+    # If non-classical is not available, use modified CNT instead
+    elif spec in specs_mcnt_available:
+        _, ncl = _fracs_mcnt(
+            spec, mmr, temp, pres, mmw, ncl_in, nuc_eff, analytic_approximation
+        )
+
+    # If neither is available, the species cant nucleate.
     else:
         if spec not in preventer:
             print('[WARN] No nucleation rate info for "' + spec + '". '
@@ -552,7 +578,7 @@ def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in,
 
 # =======================================================================================
 # General description for non classicle nucleation rate
-def _non_classical_nucleation(spec, mmr, temp, pres, mmw, ncl_in=0,
+def _non_classical_nucleation(spec, mmr, temp, pres, mmw, ncl_in=0, nuc_eff=1,
                               analytic_approx=False):
     """
     Here the nucleation rate and the growth rate are calculated. The goal is to find
@@ -587,6 +613,8 @@ def _non_classical_nucleation(spec, mmr, temp, pres, mmw, ncl_in=0,
         mean molecular weight [amu]
     ncl_in : float
         Number density of already present cloud particles.
+    nuc_eff : float
+        Nucleation efficiency. This parameter can be used to tune nucleation rates.
     analytic_approx : bool, optional
         If true, a simplified analytic expression is used. This is faster and more
         stable but yields wrong results for mmr close to the saturation value.
@@ -644,7 +672,7 @@ def _non_classical_nucleation(spec, mmr, temp, pres, mmw, ncl_in=0,
             mask = nn != 0  # prevent division by 0
             sfac = 1 - pvap / p1r  # supersaturation factor
             # spot where nucleation and growth are equal
-            out[l] = np.abs(1 / np.sum(acdan[mask] / nn[mask]) * sfac - (ncl_tot + ncl_in))
+            out[l] = np.abs(1 / np.sum(acdan[mask] / nn[mask]) * sfac - (ncl_tot + ncl_in)*nuc_eff)
         # return output
         return out
 
@@ -722,7 +750,7 @@ def _read_data(spec):
 
 # =======================================================================================
 # Solution for specific elements from Lee et al. 2018 (DOI 10.1051/0004-6361/201731977)
-def _fracs_elsie(spec, mmr, temp, pres, mmw, ncl_in=0, analytic_approx=False):
+def _fracs_mcnt(spec, mmr, temp, pres, mmw, ncl_in=0, nuc_eff=1, analytic_approx=False):
     """
     Calculate the number of CCNs created as predicted by Modified Classical Nucleation
     Theory (MCNT).
@@ -741,6 +769,8 @@ def _fracs_elsie(spec, mmr, temp, pres, mmw, ncl_in=0, analytic_approx=False):
         total mass mixing ratio of spec (qt in eddysed lingo)
     ncl_in : float
         Number density of already present cloud particles.
+    nuc_eff : float
+        Nucleation efficiency. This parameter can be used to tune nucleation rates.
     analytic_approx : bool, optional
         If true, a simplified analytic expression is used. This is faster and more
         stable but yields wrong results for mmr close to the saturation value.
@@ -753,19 +783,19 @@ def _fracs_elsie(spec, mmr, temp, pres, mmw, ncl_in=0, analytic_approx=False):
     """
     # get nucleation rate, vapour pressure, number of monomers per ccn, radius of
     # monomer, and mass of monomer from Lee et al. 2018 (A&A 614, A126).
-    j, pvap, n_ccn, r1, m1 = _elsies_vapor_pressures(spec, temp)
+    j, pvap, n_ccn, r1, m1 = _mcnt_vapor_pressures(spec, temp)
 
     # call balancing function
     result = _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap,
-                             ncl_in, analytic_approx)
+                             ncl_in, nuc_eff, analytic_approx)
 
     # return result
     return result
 
 
 # =======================================================================================
-# Data from Lee et al. 2018 (DOI 10.1051/0004-6361/201731977)
-def _elsies_vapor_pressures(spec, temp):
+# data for mcnt calculations
+def _mcnt_vapor_pressures(spec, temp):
     """
     Data according to Lee et al. 2018 (A&A 614, A126)
 
@@ -781,79 +811,118 @@ def _elsies_vapor_pressures(spec, temp):
     # in the paper, here 100 is assumed.
     n_ccn = 100
 
-    # ==== data taken from paper
-    if spec == 'TiO2':
-        pvap = np.exp(35.8027 - 74734.7 / temp)
-        r1 = 1.956e-8
-        m1 = 79.866 / AVOG
-        sig = 589.79 - 0.0708 * temp
-    elif spec == 'SiO':
-        pvap = np.exp(32.52 - 49520 / temp)
-        r1 = 2.001e-8
-        m1 = 44.085 / AVOG
-        sig = 500  # Gail and Sedlmayr (1986)
-    elif spec == 'Cr':
-        pvap = 10 ** (7.490 - 20592 / temp) * 1e6
-        r1 = 1.421e-8
-        m1 = 51.996 / AVOG
-        sig = 3330
-    elif spec == 'KCl':
-        pvap = 10 ** (29.9665 - 23055.3 / temp) * 1e6
-        r1 = 2.462e-8
-        m1 = 74.551 / AVOG
-        sig = 100.3
-    elif spec == 'NaCl':
-        pvap = 10 ** (29.9665 - 23055.3 / temp) * 1e6
-        r1 = 2.205e-8
-        m1 = 58.443 / AVOG
-        sig = 113.3
-    elif spec == 'CsCl':
-        pvap = np.exp(29.9665 - 23055.3 / temp)
-        r1 = 2.557e-8
-        m1 = 168.359 / AVOG
-        sig = 100.0
-    elif spec == 'H2O':
-        temp_c = temp - 273.16
-        if temp_c < 0:
-            pvap = 6111.5 * np.exp((23.036 * temp_c - temp_c ** 2 / 333.7) / (temp_c + 279.82))
+    # check if species has mcnt data (this is checked before and should always be true)
+    if spec not in specs_mcnt[1:, 0]:
+        raise ValueError('Nucleating species "' + spec + '" not supported.')
+
+    # ==== data taken from csv file
+    key = np.where(spec == specs_mcnt[:, 0])[0][0]
+    # get style of data // yes: all data in file, no: data missing,
+    # special: not all data in file, but all data available
+    style = specs_mcnt[key, 1]
+
+    # if all data is available, just read it in
+    if style == 'yes':
+
+        # get base of vapour pressure exponent
+        base = None
+        if data_mcnt[key, 7] == '10':
+            base = 10
+        elif data_mcnt[key, 7] == 'exp':
+            base = np.exp(1)
+
+        # read in vapour pressure
+        a = data_mcnt[key, 8:15].astype(float)
+        pvap = a[0] * base**(a[1]/temp**2 + a[2]/temp + a[3] +
+                             a[4]*temp + a[5]*temp**2 + a[6]*temp**3)
+
+        # read in surface tension
+        b = data_mcnt[key, 2:4].astype(float)
+        sig = b[0] + b[1]*temp
+
+        # read in monomer radius and mass
+        r1 = data_mcnt[key, 5].astype(float)
+        m1 = data_mcnt[key, 6].astype(float) / AVOG
+
+    # if there is a special case, treat it uniquely below
+    elif style == 'special':
+        # ==== special cases
+        if spec == 'C':
+            pvap = np.exp(3.27860e1 - 8.65139e4/(temp + 4.80395e-1))
+            r1 = 0
+            m1 = 0 / AVOG
+            sig = 1400  # Tabak et al. (1995)
+        elif spec == 'CH4':
+            pvap = 10 ** (3.9895 - 443.028 / (temp - 0.49)) * 1e6
+            r1 = 2.383e-8
+            m1 = 16.043 / AVOG
+            sig = 14.0
+        elif spec == 'Fe':
+            if temp > 1800.0:
+                pvap = np.exp(9.86 - 37120.0 / temp) * 1e6
+            else:
+                pvap = np.exp(15.71 - 47664.0 / temp) * 1e6
+            r1 = 0
+            m1 = 0 / AVOG
+            # http://www.kayelaby.npl.co.uk/general_physics/2_2/2_2_5.html
+            sig = 1862.0 - 0.39 * (temp - 273.15 - 1530.0)
+        elif spec == 'H2O':
+            temp_c = temp - 273.16
+            if temp_c < 0:
+                pvap = 6111.5 * np.exp((23.036 * temp_c - temp_c ** 2 / 333.7) / (temp_c + 279.82))
+            else:
+                pvap = 6112.1 * np.exp((18.729 * temp_c - temp_c ** 2 / 227.3) / (temp_c + 257.87))
+            r1 = 1.973e-8
+            m1 = 18.015 / AVOG
+            sig = 109
+        elif spec == 'H2S':
+            # Stull(1947)
+            if temp < 30.0: # Limiter for very cold T
+                pvap = 10.0**(4.43681 - 829.439 / (30.0-25.412)) * 1e6
+            elif temp < 212.8:
+                pvap = 10.0**(4.43681 - 829.439 / (temp-25.412)) * 1e6
+            else:
+                pvap = 10.0**(4.52887 - 958.587 / (temp-0.539)) * 1e6
+            r1 = 2.293e-8
+            m1 = 58.1 / AVOG
+            sig = 58.1
+        elif spec == 'S2':
+            if temp < 413.0:
+                pvap = np.exp(27.0 - 18500.0 / temp) * 1e6
+            else:
+                pvap = np.exp(16.1 - 14000.0 / temp) * 1e6
+            r1 = 0
+            m1 = 0 / AVOG
+            sig = 60.8
+        elif spec == 'S8':
+            if temp < 413.0:
+                pvap = np.exp(20.0 - 11800.0 / temp) * 1e6
+            else:
+                pvap = np.exp(9.6 - 7510.0 / temp) * 1e6
+            r1 = 0
+            m1 = 0 / AVOG
+            sig = 60.8
         else:
-            pvap = 6112.1 * np.exp((18.729 * temp_c - temp_c ** 2 / 227.3) / (temp_c + 257.87))
-        r1 = 1.973e-8
-        m1 = 18.015 / AVOG
-        sig = 109
-    elif spec == 'NH3':
-        pvap = np.exp(10.53 - 2161 / temp - 86596 / temp ** 2) * 1e6
-        r1 = 1.980e-8
-        m1 = 17.031 / AVOG
-        sig = 23.4
-    elif spec == 'MnS': # MnS is not from the paper
-        pvap = 10.0**(11.5315-23810./temp)*1e6  # from Virga
-        r1 = 2e-8  # just a guess, find data
-        m1 = 87 / AVOG
-        sig = 2326.0  # from mini-cloud
-    elif spec == 'H2S':
-        if temp < 212.8:
-            pvap = 10 ** (4.43681 - 829.439 / (temp - 25.412)) * 1e6
-        else:
-            pvap = 10 ** (4.52887 - 958.587 / (temp - 0.539)) * 1e6
-        r1 = 2.293e-8
-        m1 = 34.081 / AVOG
-        sig = 58.1
-    elif spec == 'CH4':
-        pvap = 10 ** (3.9895 - 443.028 / (temp - 0.49)) * 1e6
-        r1 = 2.383e-8
-        m1 = 16.043 / AVOG
-        sig = 14.0
+            raise ValueError('The species "' + spec + '" is flagged as special, but no '
+                             'case handling is provided.')
+
+
+    # if neither is the case, data is missing
     else:
-        raise ValueError('Species not found')
+        raise ValueError('Data for nucleating species "' + spec + '" not complete.')
+
+    # prevent surface tension values below 1
+    sig = max([1, sig])
 
     # ==== calcualte nucleation rate
+    # SiO has a unique formula
     if spec == 'SiO':
-        # SiO has a unique formula
         def j(n1):
             p1 = n1 * KB * temp
             logs = np.log(p1 / pvap)
             return n1 ** 2 * np.exp(1.33 - 4.40e12 / temp ** 3 / logs ** 2)
+
+    # the general mcnt nucleation rate calculation from data
     else:
         # modified classical nucleation theory from Sindel et al. 2022
         def j(n1):
@@ -890,7 +959,7 @@ def _elsies_vapor_pressures(spec, temp):
 
 # =======================================================================================
 # Wrapper function for a given nucleation rate
-def _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap, ncl_in=0,
+def _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap, ncl_in=0, nuc_eff=1,
                     analytic_approx=True):
     """
     Here the nucleation rate and the growth rate are balanced. The goal is to find
@@ -922,6 +991,8 @@ def _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap, ncl_in=0,
         radius of the monomer [cm]
     ncl_in : float
         Number density of already present cloud particles. [1/cm3]
+    nuc_eff : float
+        Nucleation efficiency. This parameter can be used to tune nucleation rates.
     analytic_approx : bool, optional
         If true, a simplified analytic expression is used. This is faster and more
         stable but yields wrong results for mmr close to the saturation value.
@@ -953,7 +1024,7 @@ def _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap, ncl_in=0,
         p1r = n1r * KB * temp  # reduced partial pressure [dyn]
         sfac = 1 - pvap / p1r  # supersaturation factor
         # spot where nuclation and growth are equal
-        jnuc = j(n1r)  # nucleation rate from function
+        jnuc = j(n1r) * nuc_eff  # nucleation rate from function
         growth_rate = ac * nu * n1r * (nc + ncl_in) * sfac  # growth rate
         val = growth_rate - jnuc
         # return difference (should be minimized)
