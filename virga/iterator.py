@@ -310,7 +310,7 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
         raise ValueError('Fsed parametrisation "' + atmo.param + '" not supported')
 
     # call the eddysed function to calculate cloud qc, and qt
-    qc, qt, _, _, _, _, _, _ = _eddysed_mixed(atmo.t_level,
+    qc, qt, rg, _, _, _, _, _ = _eddysed_mixed(atmo.t_level,
         atmo.p_level, atmo.t_layer, atmo.p_layer, atmo.condensibles, gas_mw, gas_mmr,
         rho_p , atmo.mmw, atmo.g, atmo.kz, atmo.mixl, fsed_in, atmo.b, atmo.eps,
         atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param, atmo.mh,
@@ -328,6 +328,7 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
         "temperature_unit":'kelvin',
         "condensate_mmr":qc,
         "cond_plus_gas_mmr":qt,
+        "mean_particle_r":rg*1e4,
         "scalar_inputs": {'mmw':atmo.mmw,},
         "layer_thickness":atmo.dz_layer,
         'kz':atmo.kz,
