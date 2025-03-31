@@ -21,4 +21,10 @@ def test_virga_cloud():
     all_out = jdi.compute(a, as_dict=True, directory='.')
 
     assert np.isclose(np.sum(all_out['condensate_mmr']), 6.163947994805619e-05)
+    assert np.isclose(np.sum(all_out['mean_particle_r']), 213.68473817971767)
+    assert np.isclose(np.sum(all_out['droplet_eff_r']), 710.2622567489823)
+    assert np.isclose(np.sum(all_out['column_density']), 2184.11033113616)
+    assert np.isclose(np.sum(all_out['single_scattering']), 5752.215299269361)
+    assert np.isclose(np.sum(all_out['asymmetry']), 3736.8968648397567)
+    assert np.isclose(np.sum(all_out['opd_by_gas']), 0.9849945642140122)
 

@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import os
 from scipy import optimize
+from scipy.special import gamma
 
 from .root_functions import advdiff, vfall,vfall_find_root,qvs_below_model, find_cond_t, solve_force_balance
 from .calc_mie import fort_mie_calc, calc_new_mieff
@@ -614,7 +615,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
                         kz[-1], mixl[-1], gravity, mw_atmos, gas_mw[i], q_below,
                         supsat, fsed, b, eps, z_bot, z_base, z_alpha, z_min, param,
                         sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor, #all scalaers
-                        og_vfall, z_cld
+                        og_vfall, z_cld, size_distribution
                     )
 
         z_cld=None
@@ -626,7 +627,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
                 kz[iz], mixl[iz], gravity, mw_atmos, gas_mw[i], q_below,  
                 supsat, fsed, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
                 sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor, #all scalars
-                og_vfall, z_cld
+                og_vfall, z_cld, size_distribution
             )
 
             qc_path[i] = (qc_path[i] + qc[iz,i]*
@@ -639,7 +640,7 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     kz, mixl, gravity, mw_atmos, gas_mw, q_below,
     supsat, fsed, b, eps, z_top, z_bot, z_alpha, z_min, param,
     sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor,
-    og_vfall, z_cld):
+    og_vfall, z_cld, size_distribution):
     """
     Calculate layer condensate properties by iterating on optical depth
     in one model layer (convering on optical depth over sublayers)
@@ -710,6 +711,9 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
         increasing temperature
     og_vfall : bool 
         Use original or new vfall calculation
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
     Returns
     -------
@@ -806,10 +810,11 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
             ################################################
             t_sub = t_bot + np.log( p_bot/p_sub )*dtdlnp
             qt_top, qc_sub, qt_sub, rg_sub, reff_sub,ndz_sub, z_cld, fsed_layer = calc_qc(
-                    gas_name, supsat, t_sub, p_sub,r_atmos, r_cloud,
-                        qt_below, mixl, dz_sub, gravity,mw_atmos,mfp,visc,
-                        rho_p,w_convect, fsed, b, eps, param, z_bot_sub, z_sub, z_alpha, z_min,
-                        sig,mh, rmin, nrad, og_vfall,z_cld)
+                gas_name, supsat, t_sub, p_sub,r_atmos, r_cloud, qt_below, mixl, dz_sub,
+                gravity, mw_atmos, mfp, visc, rho_p,w_convect, fsed, b, eps, param,
+                z_bot_sub, z_sub, z_alpha, z_min, sig,mh, rmin, nrad, og_vfall, z_cld,
+                size_distribution
+            )
 
 
             #   vertical sums
@@ -862,7 +867,7 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
 def calc_qc(gas_name, supsat, t_layer, p_layer
     ,r_atmos, r_cloud, q_below, mixl, dz_layer, gravity,mw_atmos
     ,mfp,visc,rho_p,w_convect, fsed, b, eps, param, z_bot, z_layer, z_alpha, z_min,
-    sig, mh, rmin, nrad, og_vfall=True, z_cld=None):
+    sig, mh, rmin, nrad, og_vfall=True, z_cld=None, size_distribution='lognormal'):
     """
     Calculate condensate optical depth and effective radius for a layer,
     assuming geometric scatterers. 
@@ -920,6 +925,9 @@ def calc_qc(gas_name, supsat, t_layer, p_layer
         Minium radius on grid (cm)
     nrad : int 
         Number of radii on Mie grid
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
     Returns
     -------
@@ -1067,25 +1075,47 @@ def calc_qc(gas_name, supsat, t_layer, p_layer
                             bounds=(-np.inf, np.inf))
         alpha = pars[0]
 
+        # Calculate size distribution factors which are the second, thrid, and thrid
+        # plus alpha moment of the size distribution.
+        if size_distribution == 'lognormal':
+            fac_2 = np.exp(4*np.log(sig)**2/2)  # second moment
+            fac_3 = np.exp(9*np.log(sig)**2/2)  # third moment
+            fac_3pa = np.exp((3+alpha)**2*np.log(sig)**2/2)  # third moment with alpha
+        elif size_distribution == 'exponential':
+            fac_2 = gamma(2)  # second moment
+            fac_3 = gamma(3)  # third moment
+            fac_3pa = gamma(3+alpha)  # third moment with alpha
+        elif size_distribution == 'gamma':
+            fac_2 = gamma(2+sig) / gamma(sig)  # second moment
+            fac_3 = gamma(3+sig) / gamma(sig)  # third moment
+            fac_3pa = gamma(3+alpha+sig) / gamma(sig)  # third moment with alpha
+        elif size_distribution == 'monodisperse':
+            fac_2 = 1  # second moment
+            fac_3 = 1  # third moment
+            fac_3pa = 1  # third moment with alpha
+        else:
+            raise ValueError(size_distribution + ' distribution not known.')
 
-        #   fsed at middle of layer 
+        # additional prefactors used
+        fac_3pa_3 = (fac_3pa / fac_3)**(1/alpha)  # Check Eq. 13 A&M
+        fac_2_3 = fac_2 / fac_3  # second moment devided by third moment
+
+        #   fsed at middle of layer
         if param == 'exp':
             fsed_mid = fs * np.exp(z_layer / b) + eps
         else: # 'const'
             fsed_mid = fsed
 
-        #     EQN. 13 A&M 
-        #   geometric mean radius of lognormal size distribution
-        rg_layer = (fsed_mid**(1./alpha) *
-                    rw_layer * np.exp( -(alpha+6)*lnsig2 ))
+        # geometric mean radius of lognormal size distribution, EQN. 13 A&M
+        rg_layer = (fsed_mid**(1. / alpha) * rw_layer / fac_3pa_3)
 
-        #   droplet effective radius (cm)
-        reff_layer = rg_layer*np.exp( 5*lnsig2 )
+        # droplet effective radius (cm)
+        reff_layer = rg_layer / fac_2_3
 
         #      EQN. 14 A&M
         #   column droplet number concentration (cm^-2)
         ndz_layer = (3*rho_atmos*qc_layer*dz_layer /
-                    ( 4*np.pi*rho_p*rg_layer**3 ) * np.exp( -9*lnsig2 ))
+                    ( 4*np.pi*rho_p*rg_layer**3 ) / fac_3)
 
     return qt_top, qc_layer,qt_layer, rg_layer,reff_layer,ndz_layer, z_cld, fsed_mid 
 
