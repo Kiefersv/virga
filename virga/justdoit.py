@@ -15,7 +15,8 @@ from .direct_mmr_solver import direct_solver
 
 
 def compute(atmo, directory = None, as_dict = True, og_solver = True, 
-    direct_tol=1e-15, refine_TP = True, og_vfall=True, analytical_rg = True, do_virtual=True):
+    direct_tol=1e-15, refine_TP = True, og_vfall=True, analytical_rg = True, do_virtual=True,
+    size_distribution='lognormal'):
 
     """
     Top level program to run eddysed. Requires running `Atmosphere` class 
@@ -47,7 +48,10 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
         inclusions of alternative particle size distributions
     do_virtual : bool 
         If the user adds an upper bound pressure that is too low. There are cases where a cloud wants to 
-        form off the grid towards higher pressures. This enables that. 
+        form off the grid towards higher pressures. This enables that.
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
     Returns 
     -------
@@ -112,14 +116,14 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             fsed_in = (atmo.fsed-atmo.eps) 
         elif atmo.param == 'const':
             fsed_in = atmo.fsed
-        qc, qt, rg, reff, ndz, qc_path, mixl, z_cld = eddysed(atmo.t_level, atmo.p_level, atmo.t_layer, atmo.p_layer, 
-                                             condensibles, gas_mw, gas_mmr, rho_p , mmw, 
-                                             atmo.g, atmo.kz, atmo.mixl, 
-                                             fsed_in,
-                                             atmo.b, atmo.eps, atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param,
-                                             mh, atmo.sig, rmin, nradii,
-                                             atmo.d_molecule,atmo.eps_k,atmo.c_p_factor,
-                                             og_vfall, supsat=atmo.supsat,verbose=atmo.verbose,do_virtual=do_virtual)
+        qc, qt, rg, reff, ndz, qc_path, mixl, z_cld = eddysed(
+            atmo.t_level, atmo.p_level, atmo.t_layer, atmo.p_layer, condensibles, gas_mw,
+            gas_mmr, rho_p , mmw, atmo.g, atmo.kz, atmo.mixl, fsed_in, atmo.b, atmo.eps,
+            atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param, mh, atmo.sig,
+            rmin, nradii, atmo.d_molecule,atmo.eps_k,atmo.c_p_factor, og_vfall,
+            supsat=atmo.supsat,verbose=atmo.verbose,do_virtual=do_virtual,
+            size_distribution=size_distribution
+        )
         pres_out = atmo.p_layer
         temp_out = atmo.t_layer
         z_out = atmo.z
@@ -436,7 +440,8 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
     gas_mw, gas_mmr,rho_p,mw_atmos,gravity, kz,mixl,
     fsed, b, eps, scale_h, z_top, z_alpha, z_min, param,
     mh,sig, rmin, nrad,d_molecule,eps_k,c_p_factor,
-    og_vfall=True,do_virtual=True, supsat=0, verbose=False):
+    og_vfall=True,do_virtual=True, supsat=0, verbose=False,
+    size_distribution='lognormal'):
     """
     Given an atmosphere and condensates, calculate size and concentration
     of condensates in balance between eddy diffusion and sedimentation.
@@ -506,6 +511,9 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
         species condenses below the model domain.
     supsat : float, optional
         Default = 0 , Saturation factor (after condensation)
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
     Returns
     -------
