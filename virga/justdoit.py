@@ -18,7 +18,7 @@ from .direct_mmr_solver import direct_solver
 
 def compute(atmo, directory = None, as_dict = True, og_solver = True, 
             direct_tol=1e-15, refine_TP = True, og_vfall=True, analytical_rg = True,
-            do_virtual=True, size_distribution='lognormal', mixed=False):
+            do_virtual=True, mixed=False):
 
     """
     Top level program to run eddysed. Requires running `Atmosphere` class 
@@ -132,7 +132,7 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             atmo.scale_h, atmo.z_top, atmo.z_alpha, min(atmo.z), atmo.param, mh,
             atmo.sig, rmin, nradii, atmo.d_molecule, atmo.eps_k, atmo.c_p_factor,
             og_vfall, supsat=atmo.supsat,verbose=atmo.verbose,do_virtual=do_virtual,
-            size_distribution=size_distribution, mixed=mixed)
+            size_distribution=atmo.size_distribution, mixed=mixed)
 
         pres_out = atmo.p_layer
         temp_out = atmo.t_layer
@@ -1129,7 +1129,8 @@ def calc_qc(gas_name, supsat, t_layer, p_layer
 
 class Atmosphere():
     def __init__(self,condensibles, fsed=0.5, b=1, eps=1e-2, mh=1, mmw=2.2, sig=2.0,
-                    param='const', verbose=False, supsat=0, gas_mmr=None):
+                 param='const', verbose=False, supsat=0, gas_mmr=None,
+                 size_distribution='lognormal'):
         """
         Parameters
         ----------
@@ -1152,6 +1153,9 @@ class Atmosphere():
             'const' (constant), 'exp' (exponential density derivation)
         verbose : bool 
             Prints out warning statements throughout
+        size_distribution : str, optional
+            Define the size distribution of the cloud particles. Currently supported:
+            "lognormal" (default), "exponential", "gamma", and "monodisperse"
     
         """
         self.mh = mh
@@ -1166,6 +1170,7 @@ class Atmosphere():
         #grab constants
         self.constants()
         self.supsat = supsat
+        self.size_distribution = size_distribution
         if isinstance(gas_mmr, type(None)):
             self.gas_mmr = {igas:None for igas in condensibles}
         else: 

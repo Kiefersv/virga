@@ -777,7 +777,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
             raise ValueError(size_distribution + ' distribution not known.')
 
         # additional prefactors used
-        fac_3pa_3 = fac_3pa / fac_3
+        fac_3pa_3 = (fac_3pa / fac_3)**(1/alpha)
         fac_2_3 = fac_2 / fac_3
 
         # geometric mean radius of lognormal size distribution, EQN. 13 A&M
