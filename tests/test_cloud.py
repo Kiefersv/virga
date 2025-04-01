@@ -30,6 +30,23 @@ def test_virga_cloud():
     assert np.isclose(np.sum(all_out['opd_by_gas']), 0.9849945642140122)
     assert np.isclose(np.sum(all_out['opd_per_layer']), 0.010309205846656488)
 
+def test_virga_direct_solver():
+    # initialise atmosphere
+    a = jdi.Atmosphere(['MnS'], fsed=1, mh=1, mmw=2.2)
+    a.gravity(gravity=7.460, gravity_unit=u.Unit('m/(s**2)'))
+    a.ptk(df=jdi.hot_jupiter())
+    # calculate cloud profile using og_solver
+    all_out = jdi.compute(a, as_dict=True, directory='.', og_solver=False)
+    # check outputs
+    assert np.isclose(np.sum(all_out['condensate_mmr']), 1.843949389772658e-05)
+    assert np.isclose(np.sum(all_out['mean_particle_r']), 720.4830441320369)
+    assert np.isclose(np.sum(all_out['droplet_eff_r']), 2394.7986048690545)
+    assert np.isclose(np.sum(all_out['column_density']), 51.23056414336807)
+    assert np.isclose(np.sum(all_out['single_scattering']), 5743.974745378395)
+    assert np.isclose(np.sum(all_out['asymmetry']), 3910.185884007504)
+    assert np.isclose(np.sum(all_out['opd_by_gas']), 0.2613196396359124)
+    assert np.isclose(np.sum(all_out['opd_per_layer']), 0.0007309227958875775)
+
 def test_virga_size_distribution():
     # calculate different size distributions
     # -> lognormal is already coverd with the basic test (test_virga_single_cloud)
