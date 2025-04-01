@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import os
 from scipy import optimize
+from scipy.special import gamma
 
 from .mixed_clouds import _eddysed_mixed
 from .mixed_optics import _calc_optics_mixed
@@ -51,11 +52,14 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
     do_virtual : bool 
         If the user adds an upper bound pressure that is too low. There are cases where a cloud wants to 
         form off the grid towards higher pressures. This enables that.
+<<<<<<< HEAD
     size_distribution : str, optional
         Define the size distribution of the cloud particles. Currently supported:
         "lognormal" (default), "exponential", "gamma", and "monodisperse"
     mixed : bool, optional
         If true, cloud particles are assumed to be able to mix together.
+=======
+>>>>>>> dev
 
     Returns 
     -------
@@ -133,7 +137,6 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             atmo.sig, rmin, nradii, atmo.d_molecule, atmo.eps_k, atmo.c_p_factor,
             og_vfall, supsat=atmo.supsat,verbose=atmo.verbose,do_virtual=do_virtual,
             size_distribution=atmo.size_distribution, mixed=mixed)
-
         pres_out = atmo.p_layer
         temp_out = atmo.t_layer
         z_out = atmo.z
@@ -147,14 +150,15 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
                                              condensibles, gas_mw, gas_mmr, rho_p , mmw, 
                                              atmo.g, atmo.kz, atmo.fsed, mh,atmo.sig, rmin, nradii, 
                                              atmo.d_molecule,atmo.eps_k,atmo.c_p_factor,
-                                             direct_tol, refine_TP, og_vfall, analytical_rg)
+                                             direct_tol, refine_TP, og_vfall, analytical_rg,
+                                             atmo.size_distribution)
 
             
     #Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
-    #albedo, and asymmetry parameter. TODO ????
-    opd, w0, g0, opd_gas = _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wave_in,
-        qext, qscat, cos_qscat, atmo.sig, rmin, atmo.verbose, directory, mixed,
-        False, condensibles, rho_p
+    #albedo, and asymmetry parameter.    
+    opd, w0, g0, opd_gas = calc_optics(
+        nwave, qc, qt, rg, reff, ndz, radius, dr, qext, qscat, cos_qscat, atmo.sig, rmin,
+        nradii, atmo.verbose, atmo.size_distribution
     )
 
     if as_dict:
@@ -204,7 +208,8 @@ def create_dict(qc, qt, rg, reff, ndz,opd, w0, g0, opd_gas,wave,pressure,tempera
         'cloud_deck':z_cld
     }
 
-def calc_optics(nwave, qc, qt, rg, reff, ndz,radius,dr,qext, qscat,cos_qscat,sig, rmin, nrad,verbose=False):
+def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, qext, qscat, cos_qscat, sig,
+                rmin, nrad, verbose=False, size_distribution='lognormal'):
     """
     Calculate spectrally-resolved profiles of optical depth, single-scattering
     albedo, and asymmetry parameter.
@@ -237,6 +242,9 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz,radius,dr,qext, qscat,cos_qscat,sig
         Width of the log normal particle distribution
     verbose: bool 
         print out warnings or not
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
 
     Returns
@@ -274,33 +282,52 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz,radius,dr,qext, qscat,cos_qscat,sig
                     warning0 = f'Take caution in analyzing results. There have been a calculated particle radii off the Mie grid, which has a min radius of {rmin}cm and distribution of {sig}. The following errors:'
                     warning+='{0}cm for the {1}th gas at the {2}th grid point; '.format(str(rg[iz,igas]),str(igas),str(iz))
 
-                r2 = rg[iz,igas]**2 * np.exp( 2*np.log( sig)**2 )
+                # Calculate number density per size bin
+                if size_distribution == 'lognormal':
+                    # second moment
+                    fac_2 = np.exp(4 * np.log(sig) ** 2 / 2)
+                    # size distribution
+                    arg1 = dr / (np.sqrt(2.*PI)*radius*np.log(sig))
+                    arg2 = -np.log(radius/rg[iz,igas])**2 / (2*np.log(sig)**2)
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'exponential':
+                    # second moment
+                    fac_2 = gamma(2)
+                    # size distribution
+                    arg1 = dr / rg[iz,igas]
+                    arg2 = -radius / rg[iz,igas]
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'gamma':
+                    # second moment
+                    fac_2 = gamma(2 + sig) / gamma(sig)
+                    # size distribution
+                    arg1 = dr * radius**(sig-1) / gamma(sig) / rg[iz,igas]**sig / sig**(-sig)
+                    arg2 = - radius / rg[iz,igas] * sig
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'monodisperse':
+                    # second moment
+                    fac_2 = 1
+                    # size distribution
+                    sdist = np.zeros_like(radius)
+                    idx = (np.abs(radius - rg[iz,igas])).argmin()
+                    sdist[idx] = 1
+                else:
+                    raise ValueError(size_distribution + ' distribution not known.')
+
+                # geometric cross-section (no mie)
+                r2 = rg[iz,igas]**2 * fac_2
                 opd_layer[iz,igas] = 2.*PI*r2*ndz[iz,igas]
 
                 #  Calculate normalization factor (forces lognormal sum = 1.0)
-                rsig = sig #the log normal particle size distribution 
-                norm = 0.
-                for irad in range(nrad):
-                    rr = radius[irad]
-                    arg1 = dr[irad] / ( np.sqrt(2.*PI)*rr*np.log(rsig) )
-                    arg2 = -np.log( rr/rg[iz,igas] )**2 / ( 2*np.log(rsig)**2 )
-                    norm = norm + arg1*np.exp( arg2 )
-                    #print (rr, rg[iz,igas],rsig,arg1,arg2)
+                norm = ndz[iz, igas] / np.sum(sdist)
+                pir2ndz = norm * PI * radius**2 * sdist
 
-                # normalization
-                norm = ndz[iz,igas] / norm #number density distribution
+                # calculate sum over all radii
+                scat_gas[iz, :, igas] = np.sum(qscat[:, :, igas] * pir2ndz[np.newaxis, :], axis=1)
+                ext_gas[iz, :, igas] = np.sum(qext[:, :, igas] * pir2ndz[np.newaxis, :], axis=1)
+                cqs_gas[iz, :, igas] = np.sum(cos_qscat[:, :, igas] * pir2ndz[np.newaxis, :], axis=1)
 
-                for irad in range(nrad):
-                    rr = radius[irad]
-                    arg1 = dr[irad] / ( np.sqrt(2.*PI)*np.log(rsig) ) # log normal distribution is the rsig
-                    arg2 = -np.log( rr/rg[iz,igas] )**2 / ( 2*np.log(rsig)**2 )
-                    pir2ndz = norm*PI*rr*arg1*np.exp( arg2 )         
-                    for iwave in range(nwave): 
-                        scat_gas[iz,iwave,igas] = scat_gas[iz,iwave,igas]+qscat[iwave,irad,igas]*pir2ndz
-                        ext_gas[iz,iwave,igas] = ext_gas[iz,iwave,igas]+qext[iwave,irad,igas]*pir2ndz
-                        cqs_gas[iz,iwave,igas] = cqs_gas[iz,iwave,igas]+cos_qscat[iwave,irad,igas]*pir2ndz
-
-                    #TO DO ADD IN CLOUD SUBLAYER KLUGE LATER 
+                #TO DO ADD IN CLOUD SUBLAYER KLUGE LATER
     
     for igas in range(ngas):
         for iz in range(nz-1,-1,-1):
@@ -452,7 +479,8 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
     gas_mw, gas_mmr,rho_p,mw_atmos,gravity, kz,mixl,
     fsed, b, eps, scale_h, z_top, z_alpha, z_min, param,
     mh,sig, rmin, nrad,d_molecule,eps_k,c_p_factor,
-    og_vfall=True,do_virtual=True, supsat=0, verbose=False):
+    og_vfall=True,do_virtual=True, supsat=0, verbose=False,
+    size_distribution='lognormal'):
     """
     Given an atmosphere and condensates, calculate size and concentration
     of condensates in balance between eddy diffusion and sedimentation.
@@ -522,6 +550,9 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
         species condenses below the model domain.
     supsat : float, optional
         Default = 0 , Saturation factor (after condensation)
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
     Returns
     -------
@@ -632,7 +663,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
                         kz[-1], mixl[-1], gravity, mw_atmos, gas_mw[i], q_below,
                         supsat, fsed_in[-1], b, eps, z_bot, z_base, z_alpha, z_min, param,
                         sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor, #all scalaers
-                        og_vfall, z_cld
+                        og_vfall, z_cld, size_distribution
                     )
 
         z_cld=None
@@ -653,7 +684,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles,
                 kz[iz], mixl[iz], gravity, mw_atmos, gas_mw[i], q_below,  
                 supsat, fsed_bot, ftop, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
                 sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor, #all scalars
-                og_vfall, z_cld
+                og_vfall, z_cld, size_distribution
             )
 
             qc_path[i] = (qc_path[i] + qc[iz,i]*
@@ -666,7 +697,7 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
     kz, mixl, gravity, mw_atmos, gas_mw, q_below,
     supsat, fsed, f_top, b, eps, z_top, z_bot, z_alpha, z_min, param,
     sig,mh, rmin, nrad, d_molecule,eps_k,c_p_factor,
-    og_vfall, z_cld):
+    og_vfall, z_cld, size_distribution):
     """
     Calculate layer condensate properties by iterating on optical depth
     in one model layer (convering on optical depth over sublayers)
@@ -739,6 +770,9 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
         increasing temperature
     og_vfall : bool 
         Use original or new vfall calculation
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
     Returns
     -------
@@ -844,10 +878,11 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
                 fsed_in = fsed
 
             qt_top, qc_sub, qt_sub, rg_sub, reff_sub,ndz_sub, z_cld, fsed_layer = calc_qc(
-                    gas_name, supsat, t_sub, p_sub,r_atmos, r_cloud,
-                        qt_below, mixl, dz_sub, gravity,mw_atmos,mfp,visc,
-                        rho_p,w_convect, fsed_in, b, eps, param, z_bot_sub, z_sub, z_alpha, z_min,
-                        sig,mh, rmin, nrad, og_vfall,z_cld)
+                gas_name, supsat, t_sub, p_sub,r_atmos, r_cloud, qt_below, mixl, dz_sub,
+                gravity, mw_atmos, mfp, visc, rho_p,w_convect, fsed, b, eps, param,
+                z_bot_sub, z_sub, z_alpha, z_min, sig,mh, rmin, nrad, og_vfall, z_cld,
+                size_distribution
+            )
 
 
             #   vertical sums
@@ -900,7 +935,7 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot,
 def calc_qc(gas_name, supsat, t_layer, p_layer
     ,r_atmos, r_cloud, q_below, mixl, dz_layer, gravity,mw_atmos
     ,mfp,visc,rho_p,w_convect, fsed, b, eps, param, z_bot, z_layer, z_alpha, z_min,
-    sig, mh, rmin, nrad, og_vfall=True, z_cld=None):
+    sig, mh, rmin, nrad, og_vfall=True, z_cld=None, size_distribution='lognormal'):
     """
     Calculate condensate optical depth and effective radius for a layer,
     assuming geometric scatterers. 
@@ -958,6 +993,9 @@ def calc_qc(gas_name, supsat, t_layer, p_layer
         Minium radius on grid (cm)
     nrad : int 
         Number of radii on Mie grid
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
     Returns
     -------
@@ -1105,25 +1143,47 @@ def calc_qc(gas_name, supsat, t_layer, p_layer
                             bounds=(-np.inf, np.inf))
         alpha = pars[0]
 
+        # Calculate size distribution factors which are the second, thrid, and thrid
+        # plus alpha moment of the size distribution.
+        if size_distribution == 'lognormal':
+            fac_2 = np.exp(4*np.log(sig)**2/2)  # second moment
+            fac_3 = np.exp(9*np.log(sig)**2/2)  # third moment
+            fac_3pa = np.exp((3+alpha)**2*np.log(sig)**2/2)  # third moment with alpha
+        elif size_distribution == 'exponential':
+            fac_2 = gamma(2)  # second moment
+            fac_3 = gamma(3)  # third moment
+            fac_3pa = gamma(3+alpha)  # third moment with alpha
+        elif size_distribution == 'gamma':
+            fac_2 = gamma(2+sig) / gamma(sig)  # second moment
+            fac_3 = gamma(3+sig) / gamma(sig)  # third moment
+            fac_3pa = gamma(3+alpha+sig) / gamma(sig)  # third moment with alpha
+        elif size_distribution == 'monodisperse':
+            fac_2 = 1  # second moment
+            fac_3 = 1  # third moment
+            fac_3pa = 1  # third moment with alpha
+        else:
+            raise ValueError(size_distribution + ' distribution not known.')
 
-        #   fsed at middle of layer 
+        # additional prefactors used
+        fac_3pa_3 = (fac_3pa / fac_3)**(1/alpha)  # Check Eq. 13 A&M
+        fac_2_3 = fac_2 / fac_3  # second moment devided by third moment
+
+        #   fsed at middle of layer
         if param == 'exp':
             fsed_mid = fs * np.exp(z_layer / b) + eps
         else: # 'const'
             fsed_mid = fsed
 
-        #     EQN. 13 A&M 
-        #   geometric mean radius of lognormal size distribution
-        rg_layer = (fsed_mid**(1./alpha) *
-                    rw_layer * np.exp( -(alpha+6)*lnsig2 ))
+        # geometric mean radius of lognormal size distribution, EQN. 13 A&M
+        rg_layer = (fsed_mid**(1. / alpha) * rw_layer / fac_3pa_3)
 
-        #   droplet effective radius (cm)
-        reff_layer = rg_layer*np.exp( 5*lnsig2 )
+        # droplet effective radius (cm)
+        reff_layer = rg_layer / fac_2_3
 
         #      EQN. 14 A&M
         #   column droplet number concentration (cm^-2)
         ndz_layer = (3*rho_atmos*qc_layer*dz_layer /
-                    ( 4*np.pi*rho_p*rg_layer**3 ) * np.exp( -9*lnsig2 ))
+                    ( 4*np.pi*rho_p*rg_layer**3 ) / fac_3)
 
     return qt_top, qc_layer,qt_layer, rg_layer,reff_layer,ndz_layer, z_cld, fsed_mid 
 

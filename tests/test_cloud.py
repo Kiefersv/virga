@@ -13,7 +13,7 @@ def test_mie_database():
     assert np.isclose(np.sum(qsca), 3295.247186049365)
     assert np.isclose(np.sum(asym), 1093.2539398130693)
 
-def test_virga_single_cloud():
+def test_virga_cloud():
     # initialise atmosphere
     a = jdi.Atmosphere(['MnS'], fsed=1, mh=1, mmw=2.2)
     a.gravity(gravity=7.460, gravity_unit=u.Unit('m/(s**2)'))
@@ -29,7 +29,7 @@ def test_virga_single_cloud():
     assert np.isclose(np.sum(all_out['asymmetry']), 3736.8968648397567)
     assert np.isclose(np.sum(all_out['opd_by_gas']), 0.9849945642140122)
     assert np.isclose(np.sum(all_out['opd_per_layer']), 0.010309205846656488)
-    
+
 def test_virga_direct_solver():
     # initialise atmosphere
     a = jdi.Atmosphere(['MnS'], fsed=1, mh=1, mmw=2.2)
