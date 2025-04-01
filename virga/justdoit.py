@@ -139,8 +139,10 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             
     #Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
     #albedo, and asymmetry parameter.    
-    opd, w0, g0, opd_gas = calc_optics(nwave, qc, qt, rg, reff, ndz,radius,
-                                       dr,qext, qscat,cos_qscat,atmo.sig, rmin, nradii,verbose=atmo.verbose)
+    opd, w0, g0, opd_gas = calc_optics(
+        nwave, qc, qt, rg, reff, ndz, radius, dr, qext, qscat, cos_qscat, atmo.sig, rmin,
+        nradii, atmo.verbose, atmo.size_distribution
+    )
 
     if as_dict:
         if atmo.param == 'exp':
@@ -189,7 +191,8 @@ def create_dict(qc, qt, rg, reff, ndz,opd, w0, g0, opd_gas,wave,pressure,tempera
         'cloud_deck':z_cld
     }
 
-def calc_optics(nwave, qc, qt, rg, reff, ndz,radius,dr,qext, qscat,cos_qscat,sig, rmin, nrad,verbose=False):
+def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, qext, qscat, cos_qscat, sig,
+                rmin, nrad, verbose=False, size_distribution='lognormal'):
     """
     Calculate spectrally-resolved profiles of optical depth, single-scattering
     albedo, and asymmetry parameter.
@@ -222,6 +225,9 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz,radius,dr,qext, qscat,cos_qscat,sig
         Width of the log normal particle distribution
     verbose: bool 
         print out warnings or not
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
 
     Returns
@@ -259,33 +265,52 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz,radius,dr,qext, qscat,cos_qscat,sig
                     warning0 = f'Take caution in analyzing results. There have been a calculated particle radii off the Mie grid, which has a min radius of {rmin}cm and distribution of {sig}. The following errors:'
                     warning+='{0}cm for the {1}th gas at the {2}th grid point; '.format(str(rg[iz,igas]),str(igas),str(iz))
 
-                r2 = rg[iz,igas]**2 * np.exp( 2*np.log( sig)**2 )
+                # Calculate number density per size bin
+                if size_distribution == 'lognormal':
+                    # second moment
+                    fac_2 = np.exp(4 * np.log(sig) ** 2 / 2)
+                    # size distribution
+                    arg1 = dr / (np.sqrt(2.*PI)*radius*np.log(sig))
+                    arg2 = -np.log(radius/rg[iz,igas])**2 / (2*np.log(sig)**2)
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'exponential':
+                    # second moment
+                    fac_2 = gamma(2)
+                    # size distribution
+                    arg1 = dr / rg[iz,igas]
+                    arg2 = -radius / rg[iz,igas]
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'gamma':
+                    # second moment
+                    fac_2 = gamma(2 + sig) / gamma(sig)
+                    # size distribution
+                    arg1 = dr * radius**(sig-1) / gamma(sig) / rg[iz,igas]**sig / sig**(-sig)
+                    arg2 = - radius / rg[iz,igas] * sig
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'monodisperse':
+                    # second moment
+                    fac_2 = 1
+                    # size distribution
+                    sdist = np.zeros_like(radius)
+                    idx = (np.abs(radius - rg[iz,igas])).argmin()
+                    sdist[idx] = 1
+                else:
+                    raise ValueError(size_distribution + ' distribution not known.')
+
+                # geometric cross-section (no mie)
+                r2 = rg[iz,igas]**2 * fac_2
                 opd_layer[iz,igas] = 2.*PI*r2*ndz[iz,igas]
 
                 #  Calculate normalization factor (forces lognormal sum = 1.0)
-                rsig = sig #the log normal particle size distribution 
-                norm = 0.
-                for irad in range(nrad):
-                    rr = radius[irad]
-                    arg1 = dr[irad] / ( np.sqrt(2.*PI)*rr*np.log(rsig) )
-                    arg2 = -np.log( rr/rg[iz,igas] )**2 / ( 2*np.log(rsig)**2 )
-                    norm = norm + arg1*np.exp( arg2 )
-                    #print (rr, rg[iz,igas],rsig,arg1,arg2)
+                norm = ndz[iz, igas] / np.sum(sdist)
+                pir2ndz = norm * PI * radius**2 * sdist
 
-                # normalization
-                norm = ndz[iz,igas] / norm #number density distribution
+                # calculate sum over all radii
+                scat_gas[iz, :, igas] = np.sum(qscat[:, :, igas] * pir2ndz[np.newaxis, :], axis=1)
+                ext_gas[iz, :, igas] = np.sum(qext[:, :, igas] * pir2ndz[np.newaxis, :], axis=1)
+                cqs_gas[iz, :, igas] = np.sum(cos_qscat[:, :, igas] * pir2ndz[np.newaxis, :], axis=1)
 
-                for irad in range(nrad):
-                    rr = radius[irad]
-                    arg1 = dr[irad] / ( np.sqrt(2.*PI)*np.log(rsig) ) # log normal distribution is the rsig
-                    arg2 = -np.log( rr/rg[iz,igas] )**2 / ( 2*np.log(rsig)**2 )
-                    pir2ndz = norm*PI*rr*arg1*np.exp( arg2 )         
-                    for iwave in range(nwave): 
-                        scat_gas[iz,iwave,igas] = scat_gas[iz,iwave,igas]+qscat[iwave,irad,igas]*pir2ndz
-                        ext_gas[iz,iwave,igas] = ext_gas[iz,iwave,igas]+qext[iwave,irad,igas]*pir2ndz
-                        cqs_gas[iz,iwave,igas] = cqs_gas[iz,iwave,igas]+cos_qscat[iwave,irad,igas]*pir2ndz
-
-                    #TO DO ADD IN CLOUD SUBLAYER KLUGE LATER 
+                #TO DO ADD IN CLOUD SUBLAYER KLUGE LATER
     
     for igas in range(ngas):
         for iz in range(nz-1,-1,-1):
