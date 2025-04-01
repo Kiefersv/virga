@@ -5,11 +5,13 @@ import os
 import numpy as np
 import pandas as pd
 
+from scipy.special import gamma
+
 from .calc_mie import calc_new_mieff
 
 def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, qscat,
                        cos_qscat, sig, rmin, verbose=False, directory=None, mixed=False,
-                       quick_mix=True, gas_name=None, rhop=None):
+                       quick_mix=True, gas_name=None, rhop=None, size_distribution='lognormal'):
     """
     Calculate spectrally-resolved profiles of optical depth, single-scattering
     albedo, and asymmetry parameter.
@@ -46,6 +48,9 @@ def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, q
         If true, the optical properties of mixed materials are calculated as the weighted
         sum of the individual materials. This is not an accurate solution and should only
         be used for first analysis.
+    size_distribution : str, optional
+        Define the size distribution of the cloud particles. Currently supported:
+        "lognormal" (default), "exponential", "gamma", and "monodisperse"
 
 
     Returns
@@ -64,7 +69,6 @@ def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, q
     # get length of input arrays
     nz = qc.shape[0]  # atmosphere grid
     ngas = qc.shape[1]  # number of gas phase species
-    nrad = len(radius)  # number of Mie grid radii
 
     # prepare working and output arrays
     opd_layer = np.zeros((nz, ngas))
@@ -104,59 +108,69 @@ def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, q
                     warning += (str(rg[iz, igas]) + 'cm for the ' + str(igas) + 'th gas '
                                 'at the ' + str(iz) + 'th grid point; ')
 
-                # get cloud particle radius adjusted for size distribution
-                r2 = rg[iz, igas]**2 * np.exp(2 * np.log(sig)**2)
-                # get gemoetric cloud particle absorption
-                opd_layer[iz, igas] = 2. * np.pi * r2 * ndz[iz, igas]
+                # Calculate number density per size bin
+                if size_distribution == 'lognormal':
+                    # second moment
+                    fac_2 = np.exp(4 * np.log(sig) ** 2 / 2)
+                    # size distribution
+                    arg1 = dr / (np.sqrt(2.*np.pi)*radius*np.log(sig))
+                    arg2 = -np.log(radius/rg[iz,igas])**2 / (2*np.log(sig)**2)
+                    # this mask prevents underflow
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'exponential':
+                    # second moment
+                    fac_2 = gamma(2)
+                    # size distribution
+                    arg1 = dr / rg[iz,igas]
+                    arg2 = -radius / rg[iz,igas]
+                    # this mask prevents underflow
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'gamma':
+                    # second moment
+                    fac_2 = gamma(2 + sig) / gamma(sig)
+                    # size distribution
+                    arg1 = dr * radius**(sig-1) / gamma(sig) / rg[iz,igas]**sig / sig**(-sig)
+                    arg2 = - radius / rg[iz,igas] * sig
+                    # this mask prevents underflow
+                    sdist = arg1 * np.exp(arg2)
+                elif size_distribution == 'monodisperse':
+                    # second moment
+                    fac_2 = 1
+                    # size distribution
+                    sdist = np.zeros_like(radius)
+                    idx = (np.abs(radius - rg[iz,igas])).argmin()
+                    sdist[idx] = 1
+                else:
+                    raise ValueError(size_distribution + ' distribution not known.')
+
+                # geometric cross-section (no mie)
+                r2 = rg[iz,igas]**2 * fac_2
+                opd_layer[iz,igas] = 2.*np.pi*r2*ndz[iz, igas]
 
                 #  Calculate normalization factor (forces lognormal sum = 1.0)
-                norm = 0.
-                for irad in range(nrad):
-                    rr = radius[irad]
-                    arg1 = dr[irad] / (np.sqrt(2. * np.pi) * rr * np.log(sig))
-                    arg2 = -np.log(rr / rg[iz, igas]) ** 2 / (2 * np.log(sig) ** 2)
-                    if arg2 > -300:  # prevent underflow, set to 0 otherwise
-                        norm = norm + arg1 * np.exp(arg2)
+                norm = ndz[iz, igas] / np.sum(sdist)
+                pir2ndz = norm * np.pi * radius**2 * sdist
 
-                # normalization
-                if norm > 0:
-                    norm = ndz[iz, igas] / norm  # number density distribution
+                if mixed and igas == ngas-1:
+                    if quick_mix:
+                        wei = qc[:-1] / np.sum(qc[:-1])
+                        qs_i = np.sum(wei * qscat[:, :, :], axis=2)
+                        qe_i = np.sum(wei * qext[:, :, :], axis=2)
+                        qc_i = np.sum(wei * cos_qscat[:, :, :], axis=2)
+                    else:
+                        qs_i = qs[iz]
+                        qe_i = qe[iz]
+                        qc_i = cos[iz]
                 else:
-                    norm = 0
+                    qs_i = qscat[:, :, igas]
+                    qe_i = qext[:, :, igas]
+                    qc_i = cos_qscat[:, :, igas]
 
-                # iterate over all Mie radii
-                for irad in range(nrad):
-                    # get geometric cloud particle opacity
-                    rr = radius[irad]
-                    arg1 = dr[irad] / (np.sqrt(2. * np.pi) * np.log(sig))
-                    arg2 = -np.log(rr / rg[iz, igas]) ** 2 / (2 * np.log(sig) ** 2)
-                    if arg2 > -300:  # prevent underflow, set to 0 otherwise
-                        pir2ndz = norm * np.pi * rr * arg1 * np.exp(arg2)
-                    else:
-                        pir2ndz = 0.0
+                # calculate sum over all radii
+                scat_gas[iz, :, igas] = np.sum(qs_i * pir2ndz[np.newaxis, :], axis=1)
+                ext_gas[iz, :, igas] = np.sum(qe_i * pir2ndz[np.newaxis, :], axis=1)
+                cqs_gas[iz, :, igas] = np.sum(qc_i * pir2ndz[np.newaxis, :], axis=1)
 
-                    # mixed particles need to calculated here, cant be precalculated
-                    if mixed and igas == ngas-1:
-                        # this is a quick and dirty weighted avarage. Only use this if
-                        # computation time is non-negotiable
-                        if quick_mix:
-                            for iw in range(nwave):
-                                wei = qc[:-1]/np.sum(qc[:-1]) * pir2ndz
-                                scat_gas[iz, iw, -1] += np.sum(wei * qscat[iw, irad, :])
-                                ext_gas[iz, iw, -1] += np.sum(wei * qext[iw, irad, :])
-                                cqs_gas[iz, iw, -1] += np.sum(wei * cos_qscat[iw, irad, :])
-                        else:
-                            for iw in range(nwave):
-                                scat_gas[iz, iw, -1] += qs[iz, iw, irad] * pir2ndz
-                                ext_gas[iz, iw, -1] += qe[iz, iw, irad] * pir2ndz
-                                cqs_gas[iz, iw, -1] += cos[iz, iw, irad] * pir2ndz
-
-                    # non mixed particles are multiplied with precalculated mie coeffs
-                    else:
-                        for iw in range(nwave):
-                            scat_gas[iz, iw, igas] += qscat[iw, irad, igas] * pir2ndz
-                            ext_gas[iz, iw, igas] += qext[iw, irad, igas] * pir2ndz
-                            cqs_gas[iz, iw, igas] += cos_qscat[iw, irad, igas] * pir2ndz
 
     # perform sublayering which creates a smoother transition at the bottom of the
     # atmosphere to prevent a sudden increase in optical depth which for many radiative

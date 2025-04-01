@@ -52,14 +52,11 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
     do_virtual : bool 
         If the user adds an upper bound pressure that is too low. There are cases where a cloud wants to 
         form off the grid towards higher pressures. This enables that.
-<<<<<<< HEAD
     size_distribution : str, optional
         Define the size distribution of the cloud particles. Currently supported:
         "lognormal" (default), "exponential", "gamma", and "monodisperse"
     mixed : bool, optional
         If true, cloud particles are assumed to be able to mix together.
-=======
->>>>>>> dev
 
     Returns 
     -------
@@ -155,11 +152,17 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
 
             
     #Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
-    #albedo, and asymmetry parameter.    
-    opd, w0, g0, opd_gas = calc_optics(
-        nwave, qc, qt, rg, reff, ndz, radius, dr, qext, qscat, cos_qscat, atmo.sig, rmin,
-        nradii, atmo.verbose, atmo.size_distribution
-    )
+    #albedo, and asymmetry parameter.
+    if mixed:
+        opd, w0, g0, opd_gas = calc_optics(
+            nwave, qc[:, :-1], qt[:, :-1], rg[:, :-1], reff[:, :-1], ndz[:, :-1], radius, dr, qext, qscat, cos_qscat, atmo.sig,
+            rmin, nradii, atmo.verbose, atmo.size_distribution
+        )
+    else:
+        opd, w0, g0, opd_gas = calc_optics(
+            nwave, qc, qt, rg, reff, ndz, radius, dr, qext, qscat, cos_qscat, atmo.sig,
+            rmin, nradii, atmo.verbose, atmo.size_distribution
+        )
 
     if as_dict:
         if atmo.param == 'exp':
