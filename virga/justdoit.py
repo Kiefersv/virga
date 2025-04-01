@@ -134,7 +134,8 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
                                              condensibles, gas_mw, gas_mmr, rho_p , mmw, 
                                              atmo.g, atmo.kz, atmo.fsed, mh,atmo.sig, rmin, nradii, 
                                              atmo.d_molecule,atmo.eps_k,atmo.c_p_factor,
-                                             direct_tol, refine_TP, og_vfall, analytical_rg)
+                                             direct_tol, refine_TP, og_vfall, analytical_rg,
+                                             atmo.size_distribution)
 
             
     #Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
