@@ -12,9 +12,11 @@ import numpy as np
 import xarray as xr
 from scipy.optimize import root
 from scipy.special import gamma
+from scipy.integrate import solve_ivp
 
 from . import gas_properties
-from .mixed_clouds import _eddysed_mixed
+from .mixed_clouds import _eddysed_mixed, get_r_grid
+from .mixed_optics import _calc_optics_mixed
 from .justdoit import get_mie
 
 # pysical constants
@@ -37,7 +39,8 @@ specs_mcnt_available = specs_mcnt[specs_mcnt[:, 1] != 'no', 0][1:]
 def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
                      direct_tol=None, refine_TP=None, og_vfall=True, analytical_rg=None,
                      do_virtual=True, size_distribution='lognormal', mixed=False,
-                     iter_max=30, rel_acc=1e-3, nuc_eff=1):
+                     iter_max=30, rel_acc=1e-3, nuc_eff=1, quick_mix=False,
+                     exclude_from_nucleation=None):
     """
     Top level program to run eddysed. Requires running `Atmosphere` class
     before running this.
@@ -77,6 +80,13 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
         particles that are created. It should only be used to analyse the effect of
         impressions within nucleation rate calculations and not for actual cloud profile
         calculations.
+    quick_mix : bool, optional
+        If true, the optical properties of mixed materials are calculated as the weighted
+        sum of the individual materials. This is not an accurate solution and should only
+        be used for first analysis.
+    exclude_from_nucleation : List
+        A list of species that should be excluded from nucleation. Often used to mute
+        species which are not expected to nucleate
 
     Returns
     -------
@@ -91,6 +101,10 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
         - 'layer_thickness': altitude size of each layer in cm
         - 'kz': diffusion coefficient in cm2 / s
     """
+
+    # if mixed species are already added here remove them, they should only be added later
+    if 'mixed' in atmo.condensibles:
+        atmo.condensibles.remove('mixed')
 
     # give warning if unused parameters are given
     w_str = ''
@@ -132,10 +146,10 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
         # ==== Original VIRGA calculation ===============================================
         # compute cloud structure with given fsed_in, here a lightweight version is used
         # which does not compute opacities just yet.
-        stv = time()
+        # stv = time()
         all_out = _lightweight_compute(atmo, directory, og_vfall, do_virtual,
                                        size_distribution, mixed)
-        etv = time()
+        # etv = time()
 
         # remember output
         memory_virga.append(all_out.copy())
@@ -151,14 +165,14 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
         kzz = all_out['kz']
 
         # Post-calculate cloud particle properties from virga mmrs
-        stp = time()
+        # stp = time()
         fsed, ncl_tot, rg, qcl_tot = _top_down_property_calculator(
             atmo.condensibles, qc, qt, temp, pres, atmo.dz_layer, kzz, mmw, atmo.g,
-            atmo.sig, size_distribution, mixed, nuc_eff
+            atmo.sig, size_distribution, mixed, nuc_eff, exclude_from_nucleation
         )
-        etp = time()
-        print('')
-        print(etv - stv, etp - stp)
+        # etp = time()
+        # print('')
+        # print(etv - stv, etp - stp)
 
         # interpolate fsed from mid to edge values for next run
         fsed_w[0] = fsed[0]  # lower limit
@@ -183,6 +197,7 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
         memory_new[-1]['fsed'] = fsed
         memory_new[-1]['mean_particle_r'] = rg*1e4
         memory_new[-1]['particle_density'] = ncl_tot
+        memory_new[-1]['column_density'] = ncl_tot * atmo.dz_layer[:, np.newaxis]
         memory_new[-1]['condensate_mmr'] = qcl_tot
 
         # ==== Check for convergance and prepare next loop ==============================
@@ -201,7 +216,8 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
             continue
 
         # Compare to previous value and see if deviations are within tolerance
-        error = np.abs((qc[qc > 0] - qc_old[qc > 0]) / qc[qc > 0])
+        mask = (qc > 0) #* (qc_old > 0)
+        error = np.abs((qc[mask] - qc_old[mask]) / qc[mask])
         error_max = np.max(error)  # remember the maximum error for print
 
         # if error is below accuracy, finish loop
@@ -216,7 +232,7 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
 
     # in case of convergence, give info
     if converged:
-        i_str = '\r[INFO] Iterator successful after ' + str(i) + ' iterations '
+        i_str = '\r[INFO] Iterator successful after ' + str(i-1) + ' iterations '
         print(i_str + time_str)
 
     # in case of non-convergence, add the last 10 iterations averaged
@@ -234,6 +250,54 @@ def compute_iterator(atmo, directory=None, as_dict=None, og_solver=None,
                 avg[key] = avg[key] / 10
 
         memory_new.append(avg)
+
+    # ==== Optical properties ===========================================================
+    start_time = time()
+    # prepare working array
+    ngas = len(atmo.condensibles)
+    rho_p = memory_new[-1]['rho_p']
+    ndz = memory_new[-1]['column_density']
+
+    # mie read in preparations
+    _, _, _, nwave, radius, _ = get_mie(atmo.condensibles[0], directory)
+    nradii = len(radius)
+    rmin = np.min(radius)
+    radius, rup, dr = get_r_grid(rmin, n_radii=nradii)
+    qext = np.zeros((nwave, nradii, ngas))
+    qscat = np.zeros((nwave, nradii, ngas))
+    cos_qscat = np.zeros((nwave, nradii, ngas))
+
+    # remove the mixed entry if necessary
+    iter_gas = atmo.condensibles
+    if mixed:
+        iter_gas = atmo.condensibles[:-1]
+
+    # Get mie files that are already saved in directory
+    for i, igas in enumerate(iter_gas):
+        qext_gas, qscat_gas, cos_qscat_gas, nwave, radius, wave_in = get_mie(igas, directory)
+        # add to master matrix that contains the per gas Mie stuff
+        qext[:, :, i], qscat[:, :, i], cos_qscat[:, :, i] = qext_gas, qscat_gas, cos_qscat_gas
+
+    #Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
+    #albedo, and asymmetry parameter.
+    opd, w0, g0, opd_gas = _calc_optics_mixed(
+        nwave, qc, rg, ndz, radius, rup, dr, wave_in, qext, qscat, cos_qscat,
+        atmo.sig, rmin, atmo.verbose, directory, mixed, quick_mix, atmo.condensibles, rho_p,
+        atmo.size_distribution
+    )
+
+    # calculate evaluation time
+    end_time = time()
+    time_str = '(' + str(round(end_time - start_time, 1)) + ' s).'
+    i_str = '\r[INFO] Optical properties calculation is done '
+    print(i_str + time_str)
+
+    # add the resulsts to the last entry of memory_new
+    memory_new[-1]['opd_per_layer'] = opd
+    memory_new[-1]['single_scattering'] = w0
+    memory_new[-1]['asymmetry'] = g0
+    memory_new[-1]['opd_by_gas'] = opd_gas
+    memory_new[-1]['wavelength'] = wave_in
 
     return memory_virga, memory_new
 
@@ -332,12 +396,16 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
         "condensate_mmr":qc,
         "cond_plus_gas_mmr":qt,
         'particle_density': ndz/atmo.dz_pmid[:, np.newaxis],
+        "particle_density_unit":'#/cm^3',
+        "column_density":ndz,
+        "column_density_unit":'#/cm^2',
         "mean_particle_r":rg*1e4,
         "droplet_eff_r":rf*1e4,
         "scalar_inputs": {'mmw':atmo.mmw,},
         "layer_thickness":atmo.dz_layer,
         'kz':atmo.kz,
         'kz_unit':'cm^2/s',
+        'rho_p': rho_p,
     }
 
     # And you are done
@@ -347,7 +415,8 @@ def _lightweight_compute(atmo, directory=None, og_vfall=True, do_virtual=True,
 #  Post processing functions
 # =======================================================================================
 def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gravity,
-                                  sig, size_distribution, mixed, nuc_eff=1):
+                                  sig, size_distribution, mixed, nuc_eff=1,
+                                  exclude_from_nuc=None):
     """
     This function calculates the cloud particle properties top down after
     virga calculated qc bottom up.
@@ -384,6 +453,9 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
         particles that are created. It should only be used to analyse the effect of
         impressions within nucleation rate calculations and not for actual cloud profile
         calculations.
+    exclude_from_nuc : List
+        A list of species that should be excluded from nucleation. Often used to mute
+        species which are not expected to nucleate
 
     Returns
     -------
@@ -467,11 +539,12 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 
                     # else calculate the nucleation rate
                     ncl_tot[iz, ig] += _get_ccn_nucleation(
-                        gas_name, qt[iz, im], temp[iz], pres[iz], mmw, ncl_tot[iz, ig]
-                    ) * nuc_eff
+                        gas_name, qt[iz, im], temp[iz], pres[iz], mmw, ncl_tot[iz, ig],
+                        nuc_eff, False, exclude_from_nuc
+                    )
 
                     # mass mixing ratio
-                    qcl_tot[iz, ig] += qc[iz, im] + qcl_in[iz, im] / fac_qcl
+                    qcl_tot[iz, ig] += qc[iz, im] #+ qcl_in[iz, im] / fac_qcl
 
             # homogenous particles are made from only their own seeds
             else:
@@ -481,11 +554,12 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 
                 # else calculate the nucleation rate
                 ncl_tot[iz, ig] += _get_ccn_nucleation(
-                    igas, qt[iz, ig], temp[iz], pres[iz], mmw, ncl_tot[iz, ig]
-                ) * nuc_eff
+                    igas, qt[iz, ig], temp[iz], pres[iz], mmw, ncl_tot[iz, ig],
+                    nuc_eff, False, exclude_from_nuc
+                )
 
                 # mass mixing ratio
-                qcl_tot[iz, ig] = qc[iz, ig] + qcl_in[iz, ig] / fac_qcl
+                qcl_tot[iz, ig] = qc[iz, ig] #+ qcl_in[iz, ig] / fac_qcl
 
             # advect the number density and mmr to the next cell
             if iz < nz-1:  # bottom cell does not need to pass value
@@ -493,13 +567,20 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
                 qcl_in[iz + 1, ig] = qcl_tot[iz, ig] * fac_qcl
 
             # ==== Fsed parameter =======================================================
-            # now the material can condense onto the particles
+            # prevent regions with very low cloud particle number density to contribute
             if ncl_tot[iz, ig] > 1e-50:
                 # get the mean radius
                 rg[iz, ig] = (3 * qcl_tot[iz, ig] * rho_atmo[iz] / 4 / np.pi / rho_p[ig]
                               / ncl_tot[iz, ig] / fac_3)**(1/3)
+
             # get new fsed parameter
             fsed[iz, ig] = fsed_pre[iz] * rg[iz, ig] * rho_p[ig]
+
+            # however, the radius should be judged more harshly, only allow if the cloud
+            # particle VMR is more than 1e-15
+            ndgas = pres[iz] / temp[iz] / KB
+            if ncl_tot[iz, ig] / ndgas < 1e-15:
+                rg[iz, ig] = 0
 
         # if mixed, all cloud particles have the same fsed
         if mixed:
@@ -509,6 +590,14 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
     # set reasonable limits
     fsed[fsed>1e3] = 1e3
     fsed[fsed<1e-3] = 1e-3
+
+    # import matplotlib.pyplot as plt
+    # plt.figure()
+    # plt.plot(rg)
+    # plt.yscale('log')
+    # plt.show()
+    ndgas = pres / temp / KB
+    n_rel = ncl_tot[:, 0] / ndgas
 
     # return fsed
     return fsed, ncl_tot, rg, qcl_tot
@@ -522,7 +611,7 @@ def _top_down_property_calculator(species, qc, qt, temp, pres, dz, kzz, mmw, gra
 #  Top level function to calculate nucleation number density
 preventer = []  # this variable remembers which warnings were already called
 def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in, nuc_eff=1,
-                        analytic_approximation=False):
+                        analytic_approximation=False, exclude=None):
     """
     This function balances nucleation rate and growth rate to find how much of the mmr
     material will nucleate and how much condenses.
@@ -547,12 +636,20 @@ def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in, nuc_eff=1,
     analytic_approximation : bool, optional
         If true, a simplified analytic expression is used. This is faster and more
         stable but yields wrong results for mmr close to the saturation value.
+    exclude : List
+        A list of species that should be excluded from nucleation. Often used to mute
+        species which are not expected to nucleate
 
     Returns
     -------
     ncl : float
         Cloud particle number density from nucleation.
     """
+
+    # if species should be excluded set nucleation to 0
+    if not isinstance(exclude, type(None)) and spec in exclude:
+        ncl = 0
+        return ncl
 
     # If available, always use non-classical nucleation theory
     if spec in []:#['TiO2']:
@@ -562,7 +659,7 @@ def _get_ccn_nucleation(spec, mmr, temp, pres, mmw, ncl_in, nuc_eff=1,
 
     # Some species are a wired special case where there is MCNT data available, but it
     # is uncertain if these species really nucleate. These species are excluded here.
-    elif spec in ['MgSiO3', 'Mg2SiO4', 'ZnS', 'Na2S']:
+    elif spec in ['MgSiO3', 'Mg2SiO4']:
         ncl = 0
 
     # If non-classical is not available, use modified CNT instead
@@ -635,6 +732,7 @@ def _non_classical_nucleation(spec, mmr, temp, pres, mmw, ncl_in=0, nuc_eff=1,
     # read in data for species
     data = _read_data(spec)  # read from file
     m1 = data['mass'].sel({'N':1}).values  # monomer mass [g]
+    r1 = data['size'].sel({'N':1}).values  # monomer mass [g]
     n = data['N'].values  # n-mer number (usually incremental from 1, 2, 3, ...)
     n_ccn = data.attrs['n_ccn']  # number of monomers in a single CCN
     gibbs = data['gibbs_energy'].interp(temperature=temp).values  # [erg/K]
@@ -652,47 +750,64 @@ def _non_classical_nucleation(spec, mmr, temp, pres, mmw, ncl_in=0, nuc_eff=1,
     mol_frac = mmr * mmw / m1 / AVOG  # molar fraction of the monomer
     p1 = mol_frac * pres  # partial pressure of the monomer [dyn]
     n1 = p1 / KB / temp  # monomer number density [1/cm3]
-    exp = np.exp(-(gibbs - n * gibbs[0]) / RGAS / temp)  # exponential factor
+    arg1 = -(gibbs - n * gibbs[0]) / RGAS / temp
+    arg1[arg1 > 200] = 200
+    exp = np.exp(arg1)  # exponential factor
+    an = 4 * np.pi * r1**2 * n_ccn**(2/3)  # surface area of CCN [cm^2]
+    nu = np.sqrt(KB * temp / 2 / np.pi / m1)  # relative velocity [cm/s]
 
-    # The analytic approximation neglects the depletion from nucleation on the monomer
-    # for the calculation of the nucleation and growth rate. USE WITH CAUTION!
-    if analytic_approx:
-        nn = PF * (p1 / PF) ** n * exp / KB / temp  # N-mer density
-        eq_ncl = np.min(np.asarray([1 / np.sum(acdan / nn), n1 / n_ccn]))
-        ccn_mass = eq_ncl * n_ccn * m1  # mass of all cluod particle seeds [g]
-        eq_sol = min([ccn_mass / cl_mass_total, 1])  # prevent depletion above max
-        eq_ncl = min([eq_ncl, n1 / n_ccn])  # max number is everything nucleates
-        return eq_sol, eq_ncl
-
-    # function to find nc (in log to optimize minimization)
-    def func(lognc):
+    # nucleation rate
+    def j(ngas):
         """ lognc : ndarray -> log of the cloud particle number density """
-        # set up output array
-        out = np.zeros_like(lognc)
-        # this loop allows lognc to be an array
-        for l, lnc in enumerate(lognc):
-            # reduced partial pressure, accounting for nucleated material
-            ncl_tot = 10 ** lnc  # total cloud particle number density [1/cm3]
-            p1r = p1 - n_ccn * ncl_tot * KB * temp  # reduced partial pressure [dyn]
-            nn = PF * (p1r / PF) ** n * exp / KB / temp  # N-mer density
-            mask = nn != 0  # prevent division by 0
-            sfac = 1 - pvap / p1r  # supersaturation factor
-            # spot where nucleation and growth are equal
-            out[l] = np.abs(1 / np.sum(acdan[mask] / nn[mask]) * sfac - (ncl_tot + ncl_in)*nuc_eff)
-        # return output
-        return out
+        # reduced partial pressure, accounting for nucleated material
+        ngasc = max([1e-100, ngas])
+        p1 = n1 * KB * temp  # reduced partial pressure [dyn]
+        nn = PF * (p1 / PF) ** n * exp / KB / temp  # N-mer density
+        nn[nn < 1e-100] = 1e-100
+        return 1/(np.sum(1 / (an * nu * ngasc * nn)))
 
-    # starting value is (a tenth of the) maximum value possible
-    x0 = n1 / n_ccn
-    # execute the minimisation of func to find where growth equals nucleation
-    nc_min = root(func, np.log10(x0 * 1e-1))
-    ncl = max([10 ** nc_min.x, 0])  # prevent sub zero values
+    result = _evaluate_ode(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap, ncl_in, nuc_eff)
+    return result
 
-    # and the mass fraction of the nucleation seeds
-    ccn_mass = ncl * n_ccn * m1  # mass of all cloud particle seeds
-    num_sol = ccn_mass / cl_mass_total  # mass fraction of CCNs created
-    sol = min([num_sol, 1])  # prevent division by 0
-    return sol, ncl  # mass fraction of CCNs
+    # # The analytic approximation neglects the depletion from nucleation on the monomer
+    # # for the calculation of the nucleation and growth rate. USE WITH CAUTION!
+    # if analytic_approx:
+    #     nn = PF * (p1 / PF) ** n * exp / KB / temp  # N-mer density
+    #     eq_ncl = np.min(np.asarray([1 / np.sum(acdan / nn), n1 / n_ccn]))
+    #     ccn_mass = eq_ncl * n_ccn * m1  # mass of all cluod particle seeds [g]
+    #     eq_sol = min([ccn_mass / cl_mass_total, 1])  # prevent depletion above max
+    #     eq_ncl = min([eq_ncl, n1 / n_ccn])  # max number is everything nucleates
+    #     return eq_sol, eq_ncl
+    #
+    # # function to find nc (in log to optimize minimization)
+    # def func(lognc):
+    #     """ lognc : ndarray -> log of the cloud particle number density """
+    #     # set up output array
+    #     out = np.zeros_like(lognc)
+    #     # this loop allows lognc to be an array
+    #     for l, lnc in enumerate(lognc):
+    #         # reduced partial pressure, accounting for nucleated material
+    #         ncl_tot = 10 ** lnc  # total cloud particle number density [1/cm3]
+    #         p1r = p1 - n_ccn * ncl_tot * KB * temp  # reduced partial pressure [dyn]
+    #         nn = PF * (p1r / PF) ** n * exp / KB / temp  # N-mer density
+    #         mask = nn != 0  # prevent division by 0
+    #         sfac = 1 - pvap / p1r  # supersaturation factor
+    #         # spot where nucleation and growth are equal
+    #         out[l] = np.abs(1 / np.sum(acdan[mask] / nn[mask]) * sfac - (ncl_tot + ncl_in)*nuc_eff)
+    #     # return output
+    #     return out
+    #
+    # # starting value is (a tenth of the) maximum value possible
+    # x0 = n1 / n_ccn
+    # # execute the minimisation of func to find where growth equals nucleation
+    # nc_min = root(func, np.log10(x0 * 1e-1))
+    # ncl = max([10 ** nc_min.x, 0])  # prevent sub zero values
+    #
+    # # and the mass fraction of the nucleation seeds
+    # ccn_mass = ncl * n_ccn * m1  # mass of all cloud particle seeds
+    # num_sol = ccn_mass / cl_mass_total  # mass fraction of CCNs created
+    # sol = min([num_sol, 1])  # prevent division by 0
+    # return sol, ncl  # mass fraction of CCNs
 
 
 # =======================================================================================
@@ -792,8 +907,11 @@ def _fracs_mcnt(spec, mmr, temp, pres, mmw, ncl_in=0, nuc_eff=1, analytic_approx
     j, pvap, n_ccn, r1, m1 = _mcnt_vapor_pressures(spec, temp)
 
     # call balancing function
-    result = _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap,
-                             ncl_in, nuc_eff, analytic_approx)
+    # result = _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap,
+    #                          ncl_in, nuc_eff, analytic_approx)
+
+    result = _evaluate_ode(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap,
+                             ncl_in, nuc_eff)
 
     # return result
     return result
@@ -922,7 +1040,7 @@ def _mcnt_vapor_pressures(spec, temp):
 
     # ==== calcualte nucleation rate
     # SiO has a unique formula
-    if spec == 'SiO':
+    if spec == 'SiO !!!':
         def j(n1):
             p1 = n1 * KB * temp
             logs = np.log(p1 / pvap)
@@ -1023,6 +1141,10 @@ def _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap, ncl_in=0, nuc_
     # funciton to find nc, nc is in log to optimize minimization
     def minimisation_function(lognc):
         """ lognc : ndarray -> log of the cloud particle number density """
+        # prevent over and underflow
+        mask = np.abs(lognc) > 200
+        if np.sum(mask) > 0:
+            lognc[mask] = 200 * lognc / np.abs(lognc)
         # reduced monomer number density, accounting for nucleated material
         nc = 10 ** lognc  # cloud particle number density [1/cm3]
         n1r = n1 - nc * n_ccn  # reduced cloud particle number density [1cm3]
@@ -1104,6 +1226,94 @@ def _balance_with_j(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap, ncl_in=0, nuc_
     # plt.vlines(ncl, np.min(test_vals), np.max(test_vals), 'green')
     # #plt.yscale('log')
     # plt.xscale('log')
+    # plt.show()
+
+    # and the mass fraction of the nucleation seeds
+    ccn_mass = ncl * n_ccn * m1  # mass of all cluod particle seeds
+    return min([ccn_mass / cl_mass_total, 1]), ncl  # mass fraction of CCNs
+
+def _evaluate_ode(j, temp, pres, mmr, mmw, n_ccn, m1, r1, pvap, ncl_in=0, nuc_eff=1):
+    """
+    Here the nucleation rate and the growth rate are balanced. The goal is to find
+    the number of cloud particles at which both the nucleation rate J and the growth
+    rate R are equal which marks the point after which most material will be used up
+    in gorwth before it can nucleate and thus marks an estimate on the number of
+    cloud particles 'nc' produced. This function takes the nucleation rate as input.
+      -> Nucleation rate : J(n1)
+      -> growth rate: R = Ac nu n1 nc (1 - 1/S)
+      => Ac nu n1 nc (1 - 1/S) - J = 0
+
+    Parameters
+    ----------
+    j : function
+        Nucleation function should take 1 argument which is the monomer number density.
+    temp : float
+        temperature [K]
+    pres : float
+        pressure [dyn]
+    mmr : float
+        total mass mixing ratio of spec (qt in eddysed lingo)
+    mmw : float
+        mean molecular weight
+    n_ccn : int
+        Number of monomers per CCN
+    m1 : float
+        mass of the monomer [g]
+    r1 : float
+        radius of the monomer [cm]
+    ncl_in : float
+        Number density of already present cloud particles. [1/cm3]
+    nuc_eff : float
+        Nucleation efficiency. This parameter can be used to tune nucleation rates.
+    analytic_approx : bool, optional
+        If true, a simplified analytic expression is used. This is faster and more
+        stable but yields wrong results for mmr close to the saturation value.
+    """
+
+    # calculate growth rate properties
+    cl_mass_total = mmr * mmw * pres / RGAS / temp  # total cloud mass [g]
+    ac = 4 * np.pi * r1 ** 2 * n_ccn ** (2 / 3)  # cloud particle surface area [cm2]
+    nu = np.sqrt(KB * temp / 2 / np.pi / m1)  # relative velocity [cm/s]
+    mol_frac = mmr * mmw / m1 / AVOG  # molar fraction of the monomer
+    n1 = mol_frac * pres / KB / temp  # monomer number density [1/cm3]
+
+    def func(t, n): # reduced cloud particle number density [1cm3]
+        dfdt = np.zeros(2)
+        ngas = max([1e-100, n[0]])
+        ncl = max([1e-100, n[1]])
+        pgas = ngas * KB * temp  # reduced partial pressure [dyn]
+        sfac = max([1e-100, 1 - pvap / pgas])  # supersaturation factor
+        nuc_rate = j(np.asarray([ngas])) * nuc_eff
+        growth_rate = ac * nu * ngas * ncl * sfac  # growth rate
+        dfdt[0] = - nuc_rate * n_ccn - growth_rate
+        dfdt[1] = nuc_rate
+        # print(t, sfac, nuc_rate * n_ccn, growth_rate)
+        return dfdt
+
+    def stop_condition(t, n):
+        ngas = max([1e-100, n[0]])
+        pgas = ngas * KB * temp  # reduced partial pressure [dyn]
+        sfac = 1 - pvap / pgas # supersaturation factor
+        return (sfac - 1e-3)
+
+    stop_condition.terminal = True
+
+    #solve IDE
+    start_time = time()
+    ninit = np.asarray([n1, ncl_in])
+    result = solve_ivp(func, (0, 1e15), ninit, events=stop_condition)
+    ncl = result.y[1, -1] - ncl_in
+    end_time = time()
+    # print('ODE eval: ', end_time - start_time)
+    # print(n1, ncl_in, pres, temp)
+
+    # import matplotlib.pyplot as plt
+    # plt.figure()
+    # plt.plot(result.t, result.y[0], label='ngas')
+    # plt.plot(result.t, result.y[1], label='ncl')
+    # plt.yscale('log')
+    # plt.xscale('log')
+    # plt.legend()
     # plt.show()
 
     # and the mass fraction of the nucleation seeds

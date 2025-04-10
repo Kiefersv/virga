@@ -19,7 +19,7 @@ from .direct_mmr_solver import direct_solver
 
 def compute(atmo, directory = None, as_dict = True, og_solver = True, 
             direct_tol=1e-15, refine_TP = True, og_vfall=True, analytical_rg = True,
-            do_virtual=True, mixed=False):
+            do_virtual=True, mixed=False, quick_mix=False):
 
     """
     Top level program to run eddysed. Requires running `Atmosphere` class 
@@ -57,6 +57,10 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
         "lognormal" (default), "exponential", "gamma", and "monodisperse"
     mixed : bool, optional
         If true, cloud particles are assumed to be able to mix together.
+    quick_mix : bool, optional
+        If true, the optical properties of mixed materials are calculated as the weighted
+        sum of the individual materials. This is not an accurate solution and should only
+        be used for first analysis.
 
     Returns 
     -------
@@ -153,16 +157,11 @@ def compute(atmo, directory = None, as_dict = True, og_solver = True,
             
     #Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
     #albedo, and asymmetry parameter.
-    if mixed:
-        opd, w0, g0, opd_gas = calc_optics(
-            nwave, qc[:, :-1], qt[:, :-1], rg[:, :-1], reff[:, :-1], ndz[:, :-1], radius, dr, qext, qscat, cos_qscat, atmo.sig,
-            rmin, nradii, atmo.verbose, atmo.size_distribution
-        )
-    else:
-        opd, w0, g0, opd_gas = calc_optics(
-            nwave, qc, qt, rg, reff, ndz, radius, dr, qext, qscat, cos_qscat, atmo.sig,
-            rmin, nradii, atmo.verbose, atmo.size_distribution
-        )
+    opd, w0, g0, opd_gas = _calc_optics_mixed(
+        nwave, qc, rg, ndz, radius, rup, dr, wave_in, qext, qscat, cos_qscat,
+        atmo.sig, rmin, atmo.verbose, directory, mixed, quick_mix, condensibles, rho_p,
+        atmo.size_distribution
+    )
 
     if as_dict:
         if atmo.param == 'exp':

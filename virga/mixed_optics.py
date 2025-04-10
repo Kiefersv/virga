@@ -4,6 +4,7 @@
 import os
 import numpy as np
 import pandas as pd
+from time import time
 
 from scipy.special import gamma
 
@@ -97,7 +98,7 @@ def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, q
         for igas in range(ngas):
 
             # Only if there are cloud particles, do something
-            if ndz[iz, igas] > 0:
+            if rg[iz, igas] > 0 and ndz[iz, igas] > 0:
 
                 # warining message for small cloud radii
                 if np.log10(rg[iz, igas]) < np.log10(rmin) + 0.75 * sig:
@@ -148,15 +149,30 @@ def _calc_optics_mixed(nwave, qc, rg, ndz, radius, rup, dr, wavelengths, qext, q
                 opd_layer[iz,igas] = 2.*np.pi*r2*ndz[iz, igas]
 
                 #  Calculate normalization factor (forces lognormal sum = 1.0)
-                norm = ndz[iz, igas] / np.sum(sdist)
+                norm = 0
+                if np.sum(sdist) > 1e-300:
+                    norm = ndz[iz, igas] / np.sum(sdist)
+                # import matplotlib.pyplot as plt
+                # plt.figure()
+                # plt.plot(rg)
+                # plt.yscale('log')
+                # plt.show()
+                # print('-----------------------------------------------')
+                # for irad in range(len(radius)):
+                #     rr = radius[irad]
+                #     arg1 = dr[irad] / ( np.sqrt(2.*np.pi)*rr*np.log(sig) )
+                #     arg2 = -np.log( rr/rg[iz,igas] )**2 / ( 2*np.log(sig)**2 )
+                #     print(arg1*np.exp( arg2 ))
+                # print(sdist)
+                # print(radius, rg[iz,igas], dr)
                 pir2ndz = norm * np.pi * radius**2 * sdist
 
                 if mixed and igas == ngas-1:
                     if quick_mix:
-                        wei = qc[:-1] / np.sum(qc[:-1])
-                        qs_i = np.sum(wei * qscat[:, :, :], axis=2)
-                        qe_i = np.sum(wei * qext[:, :, :], axis=2)
-                        qc_i = np.sum(wei * cos_qscat[:, :, :], axis=2)
+                        wei = qc[iz, :-1] / np.sum(qc[iz, :-1])
+                        qs_i = np.sum(wei[np.newaxis, np.newaxis, :] * qscat[:, :, :-1], axis=2)
+                        qe_i = np.sum(wei[np.newaxis, np.newaxis, :] * qext[:, :, :-1], axis=2)
+                        qc_i = np.sum(wei[np.newaxis, np.newaxis, :] * cos_qscat[:, :, :-1], axis=2)
                     else:
                         qs_i = qs[iz]
                         qe_i = qe[iz]

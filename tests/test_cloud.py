@@ -88,11 +88,11 @@ def test_virga_mixed_cloud():
     assert np.isclose(np.sum(all_out['droplet_eff_r'][:,-1]), 902.8355222613407)
     assert np.isclose(np.sum(all_out['column_density'][:,0]), 2184.11033113616)
     assert np.isclose(np.sum(all_out['column_density'][:,-1]), 6339.705942962247)
-    assert np.isclose(np.sum(all_out['single_scattering']), 5911.124562428302)
-    assert np.isclose(np.sum(all_out['asymmetry']), 2252.193123739018)
+    assert np.isclose(np.sum(all_out['single_scattering']), 3699.098557198065)
+    assert np.isclose(np.sum(all_out['asymmetry']), 3263.267445382071)
     assert np.isclose(np.sum(all_out['opd_by_gas'][:,0]), 0.9849945642140122)
-    assert np.isclose(np.sum(all_out['opd_by_gas'][:,-1]), 2.537648459654889)
-    assert np.isclose(np.sum(all_out['opd_per_layer']), 0.06280219380297704)
+    assert np.isclose(np.sum(all_out['opd_by_gas'][:,-1]), 3.575627014252061)
+    assert np.isclose(np.sum(all_out['opd_per_layer']), 0.062410121071994985)
 
 def test_virga_fsed():
     # Note: constant fsed is tested in test_virga_single_cloud()

@@ -522,4 +522,36 @@ def SiO2(temp, mh = 1 ):
     pvap_sio2 = 1e6 * pvap_sio2 
     return pvap_sio2
 
+def SiO(temp, mh = 1 ):
+    """PLACEHODER
+    Not suited yet for public use
+    Computes vapor pressure curve
+
+    Parameters
+    ----------
+    temp : float, ndarray
+        Temperature (K)
+    mh : float
+        NON log metallicity relative to solar (1=1Xsolar)
+
+    Returns
+    -------
+    vapor pressure in dyne/cm^2
+
+    Notes
+    -----
+    .. [1] MADE UP
+    """
+    mh = np.log10(mh)
+
+    #V1 undepleted gas source
+    pvap_sio2 = np.exp(-49520.0/temp + 32.52)
+
+    #V1 depleted gas source
+    #13.360 - 28265/T(K) - mh
+
+    #convert bars -> dynes/cm^2
+    pvap_sio2 = pvap_sio2
+    return pvap_sio2
+
 
