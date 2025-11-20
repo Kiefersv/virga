@@ -353,13 +353,13 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext
     # NOTE SK: This step needs to be done here since their opacity depends on their
     # mixing properties.
 
-    # i = 2
-    # qext[:, :, 0] = qext[:, :, i]
-    # qscat[:, :, 0] = qscat[:, :, i]
-    # cos_qscat[:, :, 0] = cos_qscat[:, :, i]
-    # qext[:, :, 1] = qext[:, :, i]
-    # qscat[:, :, 1] = qscat[:, :, i]
-    # cos_qscat[:, :, 1] = cos_qscat[:, :, i]
+    i = 2
+    qext[:, :, 0] = qext[:, :, i]
+    qscat[:, :, 0] = qscat[:, :, i]
+    cos_qscat[:, :, 0] = cos_qscat[:, :, i]
+    qext[:, :, 1] = qext[:, :, i]
+    qscat[:, :, 1] = qscat[:, :, i]
+    cos_qscat[:, :, 1] = cos_qscat[:, :, i]
     if mixed:
         if not quick_mix:
             # Mieai requires tensorflow. Importing it here allows users who don't have
@@ -385,8 +385,8 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext
                     vmr['Fe'] = np.ones_like(radius)*volfrac[z, g]*0
                     vmr['TiO2'] = np.ones_like(radius)*volfrac[z, g]*0
                     vmr[gas] = np.ones_like(radius)*volfrac[z, g]
-                    # if g != 2:
-                    #     vmr[gas] *= 0
+                    if g != 2:
+                        vmr[gas] *= 0
 
                 if vmr_c is None:
                     vmr_c = vmr
@@ -394,7 +394,6 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext
                 else:
                     diff_found = any(
                         np.any(np.abs((vmr[key] - vmr_c[key]) / vmr_c[key]) > 1e-4)
-                        for key in vmr
                     )
 
                 if diff_found:
