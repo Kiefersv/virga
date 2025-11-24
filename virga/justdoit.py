@@ -19,7 +19,7 @@ from .direct_mmr_solver import direct_solver
 
 def compute(atmo, directory=None, as_dict=True, og_solver=True, direct_tol=1e-15,
             refine_TP=True, og_vfall=True, analytical_rg=True, do_virtual=True,
-            quick_mix=False):
+            quick_mix=False, ai_mix=False):
     """
     Top level program to run eddysed. Requires running `Atmosphere` class 
     before running this. 
@@ -54,6 +54,9 @@ def compute(atmo, directory=None, as_dict=True, og_solver=True, direct_tol=1e-15
     quick_mix : bool, optional
         Only used if atmo.mixed=True. If quick_mix=True, the opacities are calculated in
         the Batch approximation (see Kiefer et al. 2024b)
+    ai_mix : bool, optional
+        Only used if mixed=True. Uses AI acceleration to calculate mixed optical
+        properties.
 
 
     Returns 
@@ -199,9 +202,8 @@ def compute(atmo, directory=None, as_dict=True, og_solver=True, direct_tol=1e-15
     # Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
     # albedo, and asymmetry parameter.
     opd, w0, g0, opd_gas = calc_optics(
-        nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext, qscat,
-        cos_qscat, atmo.sig, rmin, rmax, atmo.mixed, rho_p, wave_in, condensibles,
-        directory, quick_mix, verbose=atmo.verbose
+        nwave, qc, rg, ndz, radius, dr, qext, qscat, cos_qscat, atmo.sig, rmin, rmax,
+        rho_p, wave_in, condensibles, atmo.mixed, quick_mix, ai_mix,atmo.verbose
     )
 
     if as_dict:
@@ -251,8 +253,9 @@ def create_dict(qc, qt, rg, reff, ndz,opd, w0, g0, opd_gas,wave,pressure,tempera
         'cloud_deck':z_cld
     }
 
-def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext, qscat, cos_qscat, sig,
-                rmin, rmax, mixed, rhop, wavelength, gas_name, directory, quick_mix=False, verbose=False):
+def calc_optics(nwave, qc, rg, ndz, radius, dr, qext, qscat, cos_qscat, sig, rmin, rmax,
+                rhop, wavelength, gas_name, mixed=False, quick_mix=False, ai_mix=False,
+                verbose=False):
     """
     Calculate spectrally-resolved profiles of optical depth, single-scattering
     albedo, and asymmetry parameter.
@@ -262,23 +265,19 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext
     nwave : int 
         Number of wave points 
     qc : ndarray
-        Condensate mixing ratio 
-    qt : ndarray 
-        Gas + condensate mixing ratio 
+        Condensate mixing ratio
     rg : ndarray 
-        Geometric mean radius of condensate 
-    reff : ndarray
-        Effective (area-weighted) radius of condensate (cm)
+        Geometric mean radius of condensate
     ndz : ndarray
         Column density of particle concentration in layer (#/cm^2)
     radius : ndarray
         Particle radius bin centers from the grid (cm)
     dr : ndarray
         Width of radius bins (cm)
-    qscat : ndarray
-        Scattering efficiency
     qext : ndarray
         Extinction efficiency
+    qscat : ndarray
+        Scattering efficiency
     cos_qscat : ndarray
         qscat-weighted <cos (scattering angle)>
     sig : float 
@@ -291,17 +290,19 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext
         If True, cloud particles are considered to mix together rather than form
         individual particles.
     rhop: np.ndarray
-        densities of all homogenous materials
+        Only used if mixed=True. Densities of all homogenous materials.
     wavelength : np.ndarray
-        Wavelength grid [micron]
-    directory : str, optional
-        Directory string that describes where refrind files are
+        Only used if mixed=True. Wavelength grid [micron].
+    gas_name : List
+        Only used if mixed=True. Names of the condensables.
     quick_mix : bool, optional
         Only used if mixed=True. If quick_mix=True, the opacities are calculated in the
         Batch approximation (see Kiefer et al. 2024b)
+    ai_mix : bool, optional
+        Only used if mixed=True. Uses AI acceleration to calculate mixed optical
+        properties.
     verbose: bool 
         print out warnings or not
-
 
     Returns
     -------
@@ -314,10 +315,7 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext
     opd_gas : ndarray
         cumulative (from top) opd by condensing vapor as geometric conservative scatterers
     """
-    # ndz[:, 0] = 0
-    # ndz[:, 2] = 0
-    # rg[:, -1] = rg[:, 1]
-    # ndz[:, -1] = ndz[:, 1]
+
     # ===================================================================================
     # Initialisation
     # ===================================================================================
@@ -341,103 +339,52 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext
     w0 = np.zeros((nz, nwave))  # single scattering albedo
     g0 = np.zeros((nz, nwave))  # asymmetry parameter
 
-    # test
-    qextmm = np.zeros((nz, nw, nrad))  # mixed cloud particle extinction coefficient
-    qscamm = np.zeros((nz, nw, nrad))  # mixed cloud particle scattering coefficient
-    cos_qscamm = np.zeros((nz, nw, nrad)) # mixed cloud particle asymmetry coefficient
-
     # ===================================================================================
-    # ==== Work in progress =============================================================
-
-    # calcualte mie values for mixed cloud partilces
-    # NOTE SK: This step needs to be done here since their opacity depends on their
-    # mixing properties.
-
-    i = 2
-    qext[:, :, 0] = qext[:, :, i]
-    qscat[:, :, 0] = qscat[:, :, i]
-    cos_qscat[:, :, 0] = cos_qscat[:, :, i]
-    qext[:, :, 1] = qext[:, :, i]
-    qscat[:, :, 1] = qscat[:, :, i]
-    cos_qscat[:, :, 1] = cos_qscat[:, :, i]
+    # Mixed opacity precalculation
+    # ===================================================================================
+    # NOTE SK: The opacity calculation needs to be done here since the opacity of mixed
+    # cloud particles depends on their mixing properties.
     if mixed:
-        if not quick_mix:
-            # Mieai requires tensorflow. Importing it here allows users who don't have
-            # tensorflow installed to use Virga with mixed=False. If you would like to
-            # use mixed particles but not install tensorflow, use mixed=True and
-            # quick_mix=True.
-            from mieai import Mieai
 
-            # calculate volume fractions of each material for each height
-            vol = qc[:, :-1] / rhop[np.newaxis, ]
-            volfrac = vol / np.sum(vol, axis=1)[:, np.newaxis]
-
-            from time import time  # delete after testing
-            start = time()  # delete after testing
-            ma = Mieai()  # set up mieai class (this will most likely change)
-            # Calculate mie coefficient using ML network (Attaway et al. in prep)
-            qext_c, qsca_c, cos_qsca_c = (None, None, None)
-            vmr_c = None
-            for z in range(nz):
-                vmr = {}
-                ss = time()
-                for g, gas in enumerate(gas_name[:-1]):
-                    vmr['Fe'] = np.ones_like(radius)*volfrac[z, g]*0
-                    vmr['TiO2'] = np.ones_like(radius)*volfrac[z, g]*0
-                    vmr[gas] = np.ones_like(radius)*volfrac[z, g]
-                    if g != 2:
-                        vmr[gas] *= 0
-
-                if vmr_c is None:
-                    vmr_c = vmr
-                    diff_found = True
-                else:
-                    diff_found = any(
-                        np.any(np.abs((vmr[key] - vmr_c[key]) / vmr_c[key]) > 1e-4)
-                    )
-
-                if diff_found:
-                    qext_c, qsca_c, cos_qsca_c = ma.efficiencies(wave_in, radius*1e4, vmr)
-                    #qext_cc, qsca_cc, cos_qsca_cc = ma.efficiencies(wave_in, radius*1e4, vmr)
-                    vmr_c = vmr
-
-                # qextm[z] = qext[:, :, 2]
-                # qscam[z] = qscat[:, :, 2]
-                # cos_qscam[z] = cos_qscat[:, :, 2]
-                qextm[z], qscam[z], cos_qscam[z] = qext_c.T, qsca_c.T, cos_qsca_c.T
-                for i in range(nrad):
-                    plt.figure()
-                    plt.plot(wavelength[:, 0], qext[:, i, 0], label='Virga')
-                    plt.plot(wavelength[:, 0], qextm[z, :, i], label='Mieai.efficiencies')
-                    # plt.plot(wavelength[:, 0], qext_cc[:, i], label='Mieai.ai_efficiencies')
-                    plt.yscale('log')
-                    plt.xscale('log')
-                    plt.legend()
-                    plt.show()
-                test = 0
-
-                # qextm[z], qscam[z], cos_qscam[z] = ma.ai_efficiencies(wave_in, radius*1e4, vmr)
-                #qextm[z], qscam[z], cos_qscam[z] = ma.efficiencies(wave_in, radius*1e4, vmr)
-                # plt.figure()
-                # data = qextmm[z]-qextm[z]
-                # data[data>0.1] = np.nan
-                # data[data<-0.1] = np.nan
-                # plt.contourf(qextm[z], levels=[0, 1, 2, 3, 4, 5, 6])
-                # plt.colorbar()
-                # plt.show()
-                # print(vmr)
-                print(time()-ss)
-                print(z)
-            end = time()  # delete after testing
-            print(end - start)  # delete after testing
-        else:
-            # if quick mix is selected, remove the mixed particle entry (always the last)
-            # from the opacity calculation.
+        # Quick mix does not use the mixed properties and assumes each material forms
+        # a little homogeneous island on the cloud particle. The mixed properties are
+        # therefore not needed.
+        if quick_mix:
             ngas -= 1
 
-    # ==== Work in progress =============================================================
-    # ===================================================================================
+        # Normal mixing requries to calculate the opacities adhoc since they depend on
+        # the mixing state of the cloud particles.
+        else:
+            # Mieai requires tensorflow. Importing it here allows users who don't have
+            # tensorflow installed to use Virga with mixed=False. If you would like to
+            # use mixed particles but not install tensorflow, use ai_mix=False.
+            from mieai import Mieai
+            ma = Mieai(use_ai=False)  # set up mieai class
 
+            # calculate volume fractions of each material for each pressure layer
+            vol = qc[:, :-1] / rhop[np.newaxis, ]
+            vf = vol / np.sum(vol, axis=1)[:, np.newaxis]
+            vf[vf < 1e-50] = 1e-50
+
+            # loop over all height layers
+            qet, qst, cqt = (None, None, None)
+            for z in range(nz):
+                # check if vmrs have changed, and only then re-calculate opaciteis
+                if z == 0 or np.any(np.abs((vf[z-1] - vf[z]) / vf[z]) > 1e-4):
+
+                    # assign vmrs to mie_ai format
+                    vmr = {}
+                    for g, gas in enumerate(gas_name[:-1]):
+                        vmr[gas] = np.ones_like(radius)*vf[z, g]
+
+                    # select either ai or normal calculations
+                    if ai_mix:
+                        qet, qst, cqt = ma.ai_efficiencies(wave_in, radius*1e4, vmr)
+                    else:
+                        qet, qst, cqt = ma.efficiencies(wave_in, radius*1e4, vmr)
+
+                # if vmrs have not changed, use old vallues
+                qextm[z], qscam[z], cos_qscam[z] = qet.T, qst.T, cqt.T
 
     # ===================================================================================
     # Calculate opacity of each cloud particle material
@@ -520,10 +467,8 @@ def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext
 
                         #TO DO ADD IN CLOUD SUBLAYER KLUGE LATER
 
-                    else:
-                        # only consider the mixed species, all others are skipped
-                        if gas_name[igas] != 'mixed':
-                            continue
+                    # only consider the mixed species, all others are skipped
+                    elif gas_name[igas] == 'mixed':
                         # opacity of mixed particles
                         for iw in range(nwave):
                             scat_gas[iz, iw, igas] += qscam[iz, iw, irad] * pir2ndz
