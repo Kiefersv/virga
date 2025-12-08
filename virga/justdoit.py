@@ -168,7 +168,7 @@ def compute(atmo, directory=None, as_dict=True, og_solver=True, direct_tol=1e-15
         if atmo.param == 'exp': 
             #the formalism of this is detailed in Rooney et al. 2021
             atmo.b = 6 * atmo.b * H # using constant scale-height in fsed
-            fsed_in = (atmo.fsed-atmo.eps) 
+            fsed_in = (atmo.fsed-atmo.eps)
         elif atmo.param == 'const':
             fsed_in = atmo.fsed
 
@@ -193,11 +193,10 @@ def compute(atmo, directory=None, as_dict=True, og_solver=True, direct_tol=1e-15
         z_cld = None #temporary fix 
         qc, qt, rg, reff, ndz, qc_path, pres_out, temp_out, z_out,mixl = direct_solver(atmo.t_layer, atmo.p_layer,
                                              condensibles, gas_mw, gas_mmr, rho_p , mmw, 
-                                             atmo.g, atmo.kz, atmo.fsed, mh,atmo.sig, radius, 
+                                             atmo.g, atmo.kz, atmo.fsed, mh,atmo.sig, radius,
                                              atmo.d_molecule,atmo.eps_k,atmo.c_p_factor,
                                              atmo.aggregates,atmo.Df,atmo.N_mon,atmo.r_mon,atmo.k0, direct_tol,
                                              refine_TP, og_vfall, analytical_rg)
-
             
     # Finally, calculate spectrally-resolved profiles of optical depth, single-scattering
     # albedo, and asymmetry parameter.
@@ -208,19 +207,19 @@ def compute(atmo, directory=None, as_dict=True, og_solver=True, direct_tol=1e-15
 
     if as_dict:
         if atmo.param == 'exp':
-            fsed_out = fsed_in * np.exp((atmo.z - atmo.z_alpha) / atmo.b ) + atmo.eps
+            fsed_out = fsed_in[:, np.newaxis] * np.exp((atmo.z[np.newaxis] - atmo.z_alpha) / atmo.b ) + atmo.eps
         else: 
             fsed_out = fsed_in 
         return create_dict(qc, qt, rg, reff, ndz,opd, w0, g0, 
                            opd_gas,wave_in, pres_out, temp_out, condensibles,
                            mh,mmw, fsed_out, atmo.sig, nradii,rmin, rmax, log_radii, z_out, atmo.dz_layer, 
-                           mixl, atmo.kz, atmo.scale_h, z_cld) 
+                           mixl, atmo.kz, atmo.scale_h, z_cld, atmo.mixed)
     else:
         return opd, w0, g0
 
 def create_dict(qc, qt, rg, reff, ndz,opd, w0, g0, opd_gas,wave,pressure,temperature, gas_names,
-    mh,mmw,fsed,sig,nrad,rmin,rmax,log_radii,z, dz_layer, mixl, kz, scale_h, z_cld):
-    return {
+    mh,mmw,fsed,sig,nrad,rmin,rmax,log_radii,z, dz_layer, mixl, kz, scale_h, z_cld, mixed):
+    output = {
         "pressure":pressure/1e6, 
         "pressure_unit":'bar',
         "temperature":temperature,
@@ -252,10 +251,36 @@ def create_dict(qc, qt, rg, reff, ndz,opd, w0, g0, opd_gas,wave,pressure,tempera
         'scale_height':scale_h,
         'cloud_deck':z_cld
     }
+    
+    if mixed:
+        # create mixed sub entry
+        output['components'] = {
+            "condensate_mmr":qc[:, :-1],
+            "cond_plus_gas_mmr":qt[:, :-1],
+            "mean_particle_r":rg[:, :-1]*1e4,
+            "droplet_eff_r":reff[:, :-1]*1e4,
+            "opd_by_gas": opd_gas[:, :-1],
+            "r_units":'micron',
+            "column_density":ndz[:, :-1],
+            "column_density_unit":'#/cm^2',
+            "condensibles":gas_names[:-1],
+            "fsed": fsed[:-1],
+            'cloud_deck':z_cld[:-1]
+        }
+        # assign only the last entry since this is the mixed particle
+        output["condensate_mmr"] = qc[:, -1:]
+        output["cond_plus_gas_mmr"] = qt[:, -1:]
+        output["mean_particle_r"] = rg[:, -1:]*1e4
+        output["droplet_eff_r"] = reff[:, -1:]*1e4
+        output["column_density"] = ndz[:, -1:]
+        output["condensibles"] = gas_names[-1:]
+        output["fsed"] =  fsed[-1:]
+        output['cloud_deck'] = z_cld[-1:]
 
-def calc_optics(nwave, qc, rg, ndz, radius, dr, qext, qscat, cos_qscat, sig, rmin, rmax,
-                rhop, wavelength, gas_name, mixed=False, quick_mix=False, ai_mix=False,
-                verbose=False):
+    return output
+
+def calc_optics(nwave, qc, qt, rg, reff, ndz, radius, dr, bin_min, bin_max, qext, qscat, cos_qscat, sig,
+                rmin, rmax, mixed, rhop, wavelength, gas_name, directory, quick_mix=False, ai_mix=False, verbose=False):
     """
     Calculate spectrally-resolved profiles of optical depth, single-scattering
     albedo, and asymmetry parameter.
@@ -626,7 +651,7 @@ def calc_optics_user_r_dist(wave_in, ndz,
     return opd, w0, g0, wavenumber_grid
 
 def eddysed(t_top, p_top,t_mid, p_mid, condensibles, gas_mw, gas_mmr, rho_p, mw_atmos,
-            gravity, kz, mixl, fsed, b, eps, scale_h, z_top, z_alpha, z_min, param, mh,
+            gravity, kz, mixl, fsed_in, b, eps, scale_h, z_top, z_alpha, z_min, param, mh,
             sig, rmin, nrad, radius, d_molecule, eps_k, c_p_factor, aggregates, Df, N_mon,
             r_mon, k0, mixed, og_vfall=True, do_virtual=True, supsat=0, verbose=False):
     """
@@ -635,40 +660,40 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles, gas_mw, gas_mmr, rho_p, mw_
 
     Parameters
     ----------
-    t_top : np.ndarray
+    t_top : ndarray
         Temperature at each layer (K)
-    p_top : np.ndarray
+    p_top : ndarray
         Pressure at each layer (dyn/cm^2)
-    t_mid : np.ndarray
+    t_mid : ndarray
         Temperature at each midpoint (K)
-    p_mid : np.ndarray
+    p_mid : ndarray
         Pressure at each midpoint (dyn/cm^2)
-    condensibles : np.ndarray or list of str
+    condensibles : ndarray or list of str
         List or array of condensible gas names
-    gas_mw : np.ndarray
+    gas_mw : ndarray
         Array of gas mean molecular weight from `gas_properties`
-    gas_mmr : np.ndarray
+    gas_mmr : ndarray
         Array of gas mixing ratio from `gas_properties`
-    rho_p : np.ndarray
+    rho_p : ndarray
         density of condensed vapor (g/cm^3)
-    mw_atmos : np.ndarray
+    mw_atmos : ndarray
         Mean molecular weight of the atmosphere
     gravity : float 
         Gravity of planet cgs
-    kz : np.ndarray
+    kz : ndarray
         Kzz in cgs, either float or ndarray depending of whether or not 
         it is set as input
-    mixl : np.ndarray
+    mixl : ndarray
         mixing length
-    fsed : float 
+    fsed_in : ndarray
         Sedimentation efficiency coefficient, unitless
     b : float
         Denominator of exponential in sedimentation efficiency  (if param is 'exp')
     eps: float
         Minimum value of fsed function (if param=exp)
-    scale_h : np.ndarray
+    scale_h : ndarray
         Scale height of the atmosphere
-    z_top : np.ndarray
+    z_top : ndarray
         Altitude at each layer
     z_alpha : float
         Altitude at which fsed=alpha for variable fsed calculation
@@ -683,7 +708,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles, gas_mw, gas_mmr, rho_p, mw_
         Minium radius on grid (cm)
     nrad : int 
         Number of radii on Mie grid
-    radius : np.ndarray
+    radius : ndarray
         Particle radius bin centers from the grid (cm)
     d_molecule : float 
         diameter of atmospheric molecule (cm) (Rosner, 2000)
@@ -851,7 +876,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles, gas_mw, gas_mmr, rho_p, mw_
                     _, _, _, _, _, q_below[i], _, _ = layer(
                         igas, [rho_p[i]], t_layer_virtual, p_layer_virtual, t_bot,t_base,
                         p_bot, p_base, kz[-1], mixl[-1], gravity, mw_atmos, [gas_mw[i]],
-                        [q_below[i]], supsat, fsed, b, eps, z_bot, z_base, z_alpha, z_min,
+                        [q_below[i]], supsat, fsed_in[i], b, eps, z_bot, z_base, z_alpha, z_min,
                         param, sig, mh, rmin, nrad, radius, d_molecule, eps_k, c_p_factor,
                         og_vfall, z_cld, aggregates, Df, N_mon, r_mon, k0, mixed
                     )
@@ -869,7 +894,7 @@ def eddysed(t_top, p_top,t_mid, p_mid, condensibles, gas_mw, gas_mmr, rho_p, mw_
         qc[iz], qt[iz], rg[iz], reff[iz],ndz[iz], q_below, z_cld, _  = layer(
             condensibles, rho_p, t_mid[iz], p_mid[iz], t_top[iz], t_top[iz+1], p_top[iz],
             p_top[iz+1], kz[iz], mixl[iz], gravity, mw_atmos, gas_mw, q_below,
-            supsat, fsed, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
+            supsat, fsed_in, b, eps, z_top[iz], z_top[iz+1], z_alpha, z_min, param,
             sig,mh, rmin, nrad, radius, d_molecule,eps_k,c_p_factor,
             og_vfall, z_cld, aggregates, Df, N_mon, r_mon, k0, mixed
         )
@@ -891,7 +916,7 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot, kz, mixl
 
     gas_name : str 
         Name of condenstante 
-    rho_p : np.ndarray
+    rho_p : ndarray
         density of condensed vapor (g/cm^3)
     t_layer : float 
         Temperature of layer mid-pt (K)
@@ -913,9 +938,9 @@ def layer(gas_name,rho_p, t_layer, p_layer, t_top, t_bot, p_top, p_bot, kz, mixl
         Gravity of planet cgs 
     mw_atmos : float 
         Molecular weight of the atmosphere 
-    gas_mw : np.ndarray
+    gas_mw : ndarray
         Gas molecular weight 
-    q_below : np.ndarray
+    q_below : ndarray
         total mixing ratio (vapor+condensate) below layer (g/g)
     supsat : float 
         Super saturation factor
@@ -1170,9 +1195,9 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
         Pressure of layer mid-pt (dyne/cm^2)
     r_atmos : float 
         specific gas constant for atmosphere (erg/K/g)
-    r_cloud : np.ndarray
+    r_cloud : ndarray
         specific gas constant for cloud species (erg/K/g)     
-    q_below : np.ndarray
+    q_below : ndarray
         total mixing ratio (vapor+condensate) below layer (g/g)
     mxl : float 
         convective mixing length scale (cm): no less than 1/10 scale height
@@ -1190,7 +1215,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
         density of condensed vapor (g/cm^3)
     w_convect : float    
         convective velocity scale (cm/s)
-    fsed : float
+    fsed : ndarray
         Sedimentation efficiency coefficient (unitless) 
     b : float
         Denominator of exponential in sedimentation efficiency  (if param is 'exp')
@@ -1250,23 +1275,23 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
 
     Returns
     -------
-    qt_top : np.ndarray
+    qt_top : ndarray
         gas + condensate mixing ratio at top of layer(g/g)
-    qc_layer : np.ndarray
+    qc_layer : ndarray
         condenstate mixing ratio (g/g)
-    qt_layer : np.ndarray
+    qt_layer : ndarray
         gas + condensate mixing ratio (g/g)
-    rg_layer : np.ndarray
+    rg_layer : ndarray
         geometric mean radius of condensate  cm 
-    reff_layer : np.ndarray
+    reff_layer : ndarray
         droplet effective radius (second moment of size distrib, cm)
-    ndz_layer : np.ndarray
+    ndz_layer : ndarray
         number column density of condensate (cm^-3)
-    z_cld : np.ndarray
+    z_cld : ndarray
         altitude of the cloud layer
-    fsed_layer : np.ndarray
+    fsed_layer : ndarray
         fsed within the layers
-    rho_p_out : np.ndarray
+    rho_p_out : ndarray
         output densities, only differ from input if mixed=True
     """
     # ===================================================================================
@@ -1286,6 +1311,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
     qc_layer = np.zeros(lg)
     z_cld = np.zeros(lg)
     fsed_mid = np.zeros(lg)
+    material_can_condense = (fsed_mid == 0)  # all values True
 
     # prepare output arrays
     rg_layer = np.zeros(lg)
@@ -1299,11 +1325,11 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
 
         # solution for exponentially parametrisation
         if param == "exp":
-            fs = fsed / np.exp(z_alpha / b)
+            fs = fsed[i] / np.exp(z_alpha / b)
             fsed_mid[i] = fs * np.exp(z_layer / b) + eps
         # solution for constant fsed
         else:
-            fsed_mid[i] = fsed
+            fsed_mid[i] = fsed[i]
 
         # skip mixed cloud particle entry, this will only be used later
         if gas == 'mixed':
@@ -1327,6 +1353,7 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
             qc_layer[i] = 0.
             z_cld[i] = z_cld[i]
             fsed_mid[i] = 0
+            material_can_condense[i] = False
 
         # Cloudy layer: first calculate qt and qc at top of layer, then calculate the
         # additional cloud properties of the layer
@@ -1337,13 +1364,13 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
 
             # solution for exponentially parametrisation
             if param == "exp":
-                fs = fsed / np.exp(z_alpha / b)
+                fs = fsed[i] / np.exp(z_alpha / b)
                 qt_top[i] = (qvs + (q_below[i] - qvs)
                              * np.exp(-b * fs / mixl * np.exp(z_bot / b)
                              * (np.exp(dz_layer / b) - 1) + eps * dz_layer / mixl))
             # solution for constant fsed
             else:
-                qt_top[i] = qvs + (q_below[i] - qvs) * np.exp(-fsed * dz_layer / mixl)
+                qt_top[i] = qvs + (q_below[i] - qvs) * np.exp(-fsed[i] * dz_layer / mixl)
 
             # Use trapezoid rule to calculate layer averages
             qt_layer[i] = 0.5 * (q_below[i] + qt_top[i])
@@ -1356,6 +1383,9 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
     # This is an approximation as cloud particle of different sizes might have different
     # average densities. All other calculations here are identical to pure materials.
     if mixed:
+        # check if there is any condensiable material
+        material_can_condense[-1] = (material_can_condense[:-1] == True).any()
+
         # calcualte total cloud mass of mixed particles
         qc_layer[-1] = np.asarray([np.sum(qc_layer)])
 
@@ -1363,6 +1393,11 @@ def calc_qc(gas_name, supsat, t_layer, p_layer, r_atmos, r_cloud, q_below, mixl,
         rho_p[-1] = 0
         if qc_layer[-1] > 0:
             rho_p[-1] = np.sum(qc_layer[:-1]) / np.sum(qc_layer[:-1] / rho_p[:-1])
+
+    # check if any material can condense
+    if not material_can_condense.all():
+        return (qt_top, qc_layer, qt_layer, rg_layer, reff_layer, ndz_layer, z_cld,
+                fsed_mid, rho_p)
 
     # ===================================================================================
     # Calculate the radius of cloud particles by balancing the fall out rate
@@ -1606,8 +1641,9 @@ class Atmosphere():
         ----------
         condensibles : list of str
             list of gases for which to consider as cloud species 
-        fsed : float 
+        fsed : float or dict
             Sedimentation efficiency coefficient. Jupiter ~3-6. Hot Jupiters ~ 0.1-1.
+            Can be given for each condensible seperatly: {'Fe': 1, 'TiO2': 0.8}
         b : float
             Denominator of exponential in sedimentation efficiency  (if param is 'exp')
         eps: float
@@ -1652,7 +1688,6 @@ class Atmosphere():
             self.condensibles = condensibles
         self.mh = mh
         self.mmw = mmw
-        self.fsed = fsed
         self.b = b
         self.sig = sig
         self.param = param
@@ -1671,6 +1706,28 @@ class Atmosphere():
             self.gas_mmr = {igas:None for igas in self.condensibles}
         else: 
             self.gas_mmr = gas_mmr
+
+        # set fsed with the same length as condensibles
+        if isinstance(fsed, (int, float)):
+            # if only one value is given, use the same for all species
+            fsed_len = len(self.condensibles)
+            if self.mixed:
+                # if mixed, add the mixed species as well
+                fsed_len += 1
+            self.fsed = [fsed]*fsed_len
+        else:
+            # if multiple values are given, assign them in the correct order
+            self.fsed = []
+            for cond in self.condensibles:
+                if cond in fsed:
+                    self.fsed.append(fsed[cond])
+                else:
+                    raise ValueError("Missing fsed of " + cond)
+            if mixed:
+                # add the mixed species fsed
+                self.fsed.append(fsed['mixed'])
+
+        self.fsed = np.asarray(self.fsed)  # we need to do math with this later
 
     def constants(self):
         #   Depth of the Lennard-Jones potential well for the atmosphere 
@@ -2264,8 +2321,10 @@ def get_refrind(igas,directory,aggregates=False):
     if aggregates==False:  # use the VIRGA refractive index database file structure
         filename = os.path.join(directory ,igas+".refrind")
          #put skiprows=1 in loadtxt to skip first line
-        idummy, wave_in, nn, kk = np.loadtxt(open(filename,'rt').readlines(), unpack=True, usecols=[0,1,2,3])#[:-1]
-
+        try: 
+            idummy, wave_in, nn, kk = np.loadtxt(open(filename,'rt').readlines(), unpack=True, usecols=[0,1,2,3])#[:-1]
+        except: 
+            wave_in, nn, kk = np.loadtxt(open(filename,'rt').readlines(), unpack=True, usecols=[0,1,2], delimiter=',', skiprows=1)
         # if refractive index list is given in ascending order, flip it upside down so that it is descending here (so that it is consistent with the rest of VIRGA)
         if (wave_in[0] < wave_in[-1]): # if first element is smaller than the last one (then it is in ascending order)
             wave_in = np.flipud(wave_in)

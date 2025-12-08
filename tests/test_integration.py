@@ -7,7 +7,7 @@ import pandas as pd
 from virga import justdoit as jdi
 
 def test_basic_virga():
-    # ==== Basic run
+    # ==== Basic run ====================================================================
     # initialise atmosphere
     a = jdi.Atmosphere(['MnS'], fsed=1, mh=1, mmw=2.2)
     a.gravity(gravity=7.460, gravity_unit=u.Unit('m/(s**2)'))
@@ -32,9 +32,28 @@ def test_basic_virga():
         all_out['opd_per_layer'], all_out['single_scattering'], all_out['asymmetry'],
         pressure=all_out['pressure'], wavenumber=1/all_out['wave']/1e-4,
     )
-    df_cl.to_csv('tests/picaso_format_test.csv', index=False)
-    df_test = pd.read_csv('tests/picaso_format_test.csv')
+    df_cl.to_csv(os.path.dirname(__file__) + '/picaso_format_test.csv', index=False)
+    df_test = pd.read_csv(os.path.dirname(__file__) + '/picaso_format_test.csv')
     pd.testing.assert_frame_equal(df_cl, df_test)
+
+    # ==== Test mixed clouds with variable fsed =========================================
+    # initialise atmosphere
+    a = jdi.Atmosphere(['MnS', 'SiO2'], fsed={'MnS':1, 'SiO2':1}, mh=1, mmw=2.2, param='exp', b=3)
+    a.gravity(gravity=7.460, gravity_unit=u.Unit('m/(s**2)'))
+    a.ptk(df=jdi.hot_jupiter())
+    # calculate cloud profile
+    all_out = jdi.compute(a, as_dict=True, directory=os.path.dirname(__file__))
+    # test the output
+    tested_outputs = [
+        'condensate_mmr', 'mean_particle_r', 'droplet_eff_r', 'column_density',
+        'mixing_length', 'altitude',
+    ]
+    expected_outputs = [
+        0.007420224549370982, 385.37988982782247, 1280.956200178287, 94307.79521654578,
+        3400236589.2062654, 36062700139.00066,
+    ]
+    for i, test in enumerate(tested_outputs):
+        assert np.isclose(np.sum(all_out[test]), expected_outputs[i])
 
     # ==== testing direct solver, analytic radius calc, and original fall velocity calc
     # initialise atmosphere
@@ -67,8 +86,48 @@ def test_fractals():
         assert np.isclose(np.sum(all_out[test]), expected_outputs[i])
 
 def test_mixed_clouds():
+    # ==== Test normal mixed clouds =====================================================
     # initialise atmosphere
     a = jdi.Atmosphere(['MnS', 'SiO2'], fsed=1, mh=1, mmw=2.2, mixed=True)
+    a.gravity(gravity=7.460, gravity_unit=u.Unit('m/(s**2)'))
+    a.ptk(df=jdi.hot_jupiter())
+    # calculate cloud profile
+    all_out = jdi.compute(a, as_dict=True, directory=os.path.dirname(__file__), quick_mix=True)
+    # test the output
+    tested_outputs = [
+        'condensate_mmr', 'mean_particle_r', 'droplet_eff_r', 'column_density', 'mixing_length',
+        'altitude',
+    ]
+    expected_outputs = [
+        0.004800222240714903, 261.57706522293745, 869.4505664824956, 11291.153198839147,
+        3400236589.2062654,36062700139.00066,
+    ]
+
+    for i, test in enumerate(tested_outputs):
+        assert np.isclose(np.sum(all_out[test]), expected_outputs[i])
+
+    # ==== Test mixed clouds with variable fsed =========================================
+    # initialise atmosphere
+    a = jdi.Atmosphere(['MnS', 'SiO2'], fsed={'MnS':1, 'SiO2':2, 'mixed': 3}, mh=1, mmw=2.2, mixed=True)
+    a.gravity(gravity=7.460, gravity_unit=u.Unit('m/(s**2)'))
+    a.ptk(df=jdi.hot_jupiter())
+    # calculate cloud profile
+    all_out = jdi.compute(a, as_dict=True, directory=os.path.dirname(__file__), quick_mix=True)
+    # test the output
+    tested_outputs = [
+        'condensate_mmr', 'mean_particle_r', 'droplet_eff_r', 'column_density',
+        'mixing_length', 'altitude',
+    ]
+    expected_outputs = [
+        0.002446441173260552, 551.2994740326857, 1832.4528551105886, 203.26376906568314,
+        3400236589.2062654, 36062700139.00066,
+    ]
+    for i, test in enumerate(tested_outputs):
+        assert np.isclose(np.sum(all_out[test]), expected_outputs[i])
+
+    # ==== Test mixed clouds with variable fsed =========================================
+    # initialise atmosphere
+    a = jdi.Atmosphere(['MnS', 'SiO2'], fsed=1, mh=1, mmw=2.2, mixed=False)
     a.gravity(gravity=7.460, gravity_unit=u.Unit('m/(s**2)'))
     a.ptk(df=jdi.hot_jupiter())
     # calculate cloud profile
@@ -76,12 +135,11 @@ def test_mixed_clouds():
     # test the output
     tested_outputs = [
         'condensate_mmr', 'mean_particle_r', 'droplet_eff_r', 'column_density',
-        'single_scattering', 'asymmetry', 'opd_by_gas', 'mixing_length', 'altitude',
+        'mixing_length', 'altitude',
     ]
     expected_outputs = [
-        0.00959528233777504, 674.8984205851, 2243.2808227882874, 4350662.838922345,
-        7597.8662982779315, 5858.9127816366845, 2280.446317377925, 3400236589.2062654,
-        36062700139.00066,
+        0.004800222240714903, 479.5232340104981, 1593.8773037942406, 12144.145061051053,
+        3400236589.2062654, 36062700139.00066,
     ]
     for i, test in enumerate(tested_outputs):
         assert np.isclose(np.sum(all_out[test]), expected_outputs[i])
