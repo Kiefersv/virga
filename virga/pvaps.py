@@ -528,3 +528,31 @@ def SiO2(temp, mh = 1 ):
     return pvap_sio2
 
 
+def SiO(temp, mh = 1 ):
+    """
+    Computes vapor pressure curve
+
+    Parameters
+    ----------
+    temp : float, ndarray
+        Temperature (K)
+    mh : float
+        NON log metallicity relative to solar (1=1Xsolar)
+
+    Returns
+    -------
+    vapor pressure in dyne/cm^2
+
+    Notes
+    -----
+    Lee et al. 2018 [1]
+    """
+
+    mh = np.log10(mh)
+
+    # vapour pressure
+    pvap_sio = np.exp(32.52 - 49520.0/temp - mh)
+
+    return pvap_sio
+
+
